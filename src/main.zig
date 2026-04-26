@@ -6,39 +6,39 @@ const log = std.log;
 
 const ZigBuildParser = @import("ZigBuildParser.zig");
 
-pub fn main(init: std.process.Init) void {
-    const allocator = init.gpa;
-    var buf: [256]u8 = undefined;
-    const cwd = std.Io.Dir.cwd();
-    const workdir = buf[0 .. cwd.realPath(init.io, &buf) catch return log.info("Could not get working directory path", .{})];
-
-    var parser = ZigBuildParser.create(allocator, init.io, init.environ_map, workdir) catch |err|
-        return log.info("Could not initialize zig parser: {}", .{err});
-    defer parser.destroy(init.io);
-
-    parser.setStateChangeCallback(onDiagnostics);
-    parser.run(init.io) catch return log.info("Could not start zig build parser", .{});
-
-    var stdin_buf: [256]u8 = undefined;
-    var stdin = std.Io.File.stdin().reader(init.io, &stdin_buf);
-    while (parser.running) {
-        std.debug.print("> ", .{});
-        const cmd = stdin.interface.takeDelimiterExclusive('\n') catch |err| {
-            log.info("Command is too long ({})", .{err});
-            continue;
-        };
-        if (std.ascii.eqlIgnoreCase(cmd, "q")) parser.running = false;
-    }
-}
-
 // pub fn main(init: std.process.Init) void {
 //     const allocator = init.gpa;
+//     var buf: [256]u8 = undefined;
+//     const cwd = std.Io.Dir.cwd();
+//     const workdir = buf[0 .. cwd.realPath(init.io, &buf) catch return log.info("Could not get working directory path", .{})];
 //
-//     var server = lsp.Server{ .allocator = allocator };
-//     server.run(init.io) catch |err| log.err("Encountered error while running server: {}\n", .{err});
+//     var parser = ZigBuildParser.create(allocator, init.io, init.environ_map, workdir) catch |err|
+//         return log.info("Could not initialize zig parser: {}", .{err});
+//     defer parser.destroy(init.io);
+//
+//     parser.setStateChangeCallback(onDiagnostics, null);
+//     parser.run(init.io) catch return log.info("Could not start zig build parser", .{});
+//
+//     var stdin_buf: [256]u8 = undefined;
+//     var stdin = std.Io.File.stdin().reader(init.io, &stdin_buf);
+//     while (parser.running) {
+//         std.debug.print("> ", .{});
+//         const cmd = stdin.interface.takeDelimiterExclusive('\n') catch |err| {
+//             log.info("Command is too long ({})", .{err});
+//             continue;
+//         };
+//         if (std.ascii.eqlIgnoreCase(cmd, "q")) parser.running = false;
+//     }
 // }
 
-fn onDiagnostics(state: *const ZigBuildParser.State) void {
+pub fn main(init: std.process.Init) void {
+    const allocator = init.gpa;
+
+    var server = lsp.Server{ .allocator = allocator };
+    server.run(init.io) catch |err| log.err("Encountered error while running server: {}\n", .{err});
+}
+
+fn onDiagnostics(state: *const ZigBuildParser.State, _: ?*anyopaque) void {
     zut.dbg.dump(state.diagnostics);
 }
 
@@ -70,4 +70,5 @@ pub fn myLogFn(
 
 test {
     std.testing.refAllDecls(@This());
+    std.testing.refAllDecls(ZigBuildParser);
 }

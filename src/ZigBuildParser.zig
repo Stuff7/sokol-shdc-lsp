@@ -17,7 +17,7 @@ pub const State = struct {
     diagnostics: std.ArrayList(Diagnostic) = .empty,
 };
 
-pub const StateChangeCallback = *const fn (state: *const State) void;
+pub const StateChangeCallback = *const fn (state: *const State, ctx: ?*anyopaque) void;
 
 allocator: Allocator,
 child_process: *std.process.Child,
@@ -27,6 +27,7 @@ state_buf: [2]State,
 last_state: *State = undefined,
 draft_state: *State = undefined,
 state_change_callback: ?StateChangeCallback = null,
+ctx: ?*anyopaque = null,
 
 pub fn create(allocator: Allocator, io: Io, env: *std.process.Environ.Map, workdir: []const u8) !*@This() {
     const zig_exe_path = proc.findZigPath(allocator, io, env) orelse return error.ZigPathNotFound;
@@ -71,8 +72,9 @@ pub fn create(allocator: Allocator, io: Io, env: *std.process.Environ.Map, workd
     return self;
 }
 
-pub fn setStateChangeCallback(self: *@This(), callback: ?StateChangeCallback) void {
+pub fn setStateChangeCallback(self: *@This(), callback: ?StateChangeCallback, ctx: ?*anyopaque) void {
     self.state_change_callback = callback;
+    self.ctx = ctx;
 }
 
 pub fn destroy(self: *@This(), io: Io) void {
@@ -98,8 +100,6 @@ pub fn run(self: *@This(), io: Io) !void {
     self.last_state = &self.state_buf[0];
     self.draft_state = &self.state_buf[1];
     self.running = true;
-    dump(self);
-    dump(self.*);
     self.zig_thread = try std.Thread.spawn(.{ .allocator = self.allocator }, readBuildOutput, .{ self, io });
 }
 
@@ -108,11 +108,11 @@ fn swapState(self: *@This()) void {
     self.last_state = self.draft_state;
     self.draft_state = tmp;
 
-    if (self.state_change_callback) |callback| callback(self.last_state);
+    if (self.state_change_callback) |callback| callback(self.last_state, self.ctx);
 }
 
 fn handleChunk(self: *@This(), body: []const u8) !void {
-    log.debug("=== BODY ===\n{s}\n============\n", .{body});
+    // log.debug("=== BODY ===\n{s}\n============\n", .{body});
     var r = Io.Reader.fixed(body);
     _ = r.discardDelimiterInclusive('\n') catch return error.UnexpectedBuildOutput;
     _ = r.discardDelimiterInclusive('\n') catch return error.UnexpectedBuildOutput;
@@ -136,20 +136,30 @@ fn handleChunk(self: *@This(), body: []const u8) !void {
 }
 
 fn readBuildOutput(self: *@This(), io: Io) void {
-    dump(self);
-    dump(self.*);
     var poller = StdoutPoller.create(self.allocator, io, self.child_process.stderr.?, 50) catch return;
     defer poller.destroy(self.allocator);
 
-    var out: []const u8 = undefined;
+    var buf = std.Io.Writer.Allocating.init(self.allocator);
+    defer buf.deinit();
+
+    const delimiter = "check\n";
+
     while (self.running) {
-        std.debug.print("\n\n\n\nHI\n\n\n\n", .{});
-        out = poller.next() orelse {
-            std.debug.print("\n\n\n\nNOPE\n\n\n\n", .{});
-            continue;
-        };
-        std.debug.print("\n\n\n\nOUT: {s}\n", .{out});
-        self.handleChunk(out) catch |err| log.err("Error handling chunk: {}\n", .{err});
+        const chunk = poller.next() orelse continue;
+        buf.writer.writeAll(chunk) catch continue;
+
+        const data = buf.written();
+        const first = std.mem.indexOf(u8, data, delimiter) orelse continue;
+        const rest = data[first + delimiter.len ..];
+        const second = std.mem.indexOf(u8, rest, delimiter) orelse continue;
+
+        const message = data[first .. first + delimiter.len + second];
+        self.handleChunk(message) catch |err| log.err("Error handling chunk: {}\n", .{err});
+
+        var r = Io.Reader.fixed(data);
+        r.toss(first + delimiter.len + second);
+        buf.clearRetainingCapacity();
+        buf.writer.writeAll(r.buffered()) catch continue;
     }
 
     log.debug("Zig build parser thread has exited\n", .{});
@@ -197,7 +207,10 @@ const Diagnostic = struct {
     }
 };
 
-fn onStateChange(state: *const State) void {
+fn onStateChange(state: *const State, ctx: ?*anyopaque) void {
+    const done: *std.atomic.Value(bool) = @ptrCast(@alignCast(ctx.?));
+    defer done.store(true, .release);
+
     std.testing.expect(state.diagnostics.items.len == 5) catch {
         log.err("Expected 5 diagnostics got {}\n", .{state.diagnostics.items.len});
         return;
@@ -280,7 +293,6 @@ fn onStateChange(state: *const State) void {
 }
 
 test "run ZigBuildParser" {
-    std.debug.print("TEST\n", .{});
     std.testing.log_level = .debug;
     const allocator = std.testing.allocator;
     var env = try std.testing.environ.createMap(allocator);
@@ -290,9 +302,13 @@ test "run ZigBuildParser" {
     const cwd = Io.Dir.cwd();
     const workdir = buf[0..try cwd.realPathFile(std.testing.io, "./src/tests/project", &buf)];
 
+    var done = std.atomic.Value(bool).init(false);
     const parser = try create(allocator, std.testing.io, &env, workdir);
-    defer parser.destroy(std.testing.io);
+    defer {
+        while (!done.load(.acquire)) std.Thread.yield() catch {};
+        parser.destroy(std.testing.io);
+    }
 
-    parser.setStateChangeCallback(onStateChange);
+    parser.setStateChangeCallback(onStateChange, @ptrCast(&done));
     try parser.run(std.testing.io);
 }

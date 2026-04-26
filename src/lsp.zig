@@ -5,9 +5,9 @@ pub const Request = @import("lsp/Request.zig");
 pub const Server = @import("lsp/Server.zig");
 pub const Client = @import("lsp/Client.zig");
 
-fn unixFileUri(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+fn unixFileUri(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]const u8 {
     var buf: [256]u8 = undefined;
-    const abs_path = buf[0..try std.Io.Dir.cwd().realPathFile(path, &buf)];
+    const abs_path = buf[0..try std.Io.Dir.cwd().realPathFile(io, path, &buf)];
     return std.fmt.allocPrint(allocator, "file://{s}", .{abs_path});
 }
 
@@ -16,12 +16,13 @@ test Server {
 
     var client = try Client.init(allocator, std.testing.io, &.{"zig-out/bin/sokol-shdc-lsp-dbg"}, ".", 1000);
     defer client.deinit(std.testing.io);
+    defer client.drainStderr();
 
     const workdir_rel = "src/tests/project";
 
-    const workdir = try unixFileUri(allocator, workdir_rel);
+    const workdir = try unixFileUri(allocator, std.testing.io, workdir_rel);
     defer allocator.free(workdir);
-    const main_zig = try unixFileUri(allocator, workdir_rel ++ "/src/main.zig");
+    const main_zig = try unixFileUri(allocator, std.testing.io, workdir_rel ++ "/src/main.zig");
     defer allocator.free(main_zig);
 
     const messages = .{
@@ -364,6 +365,4 @@ test Server {
             try std.testing.expectEqualSlices(u8, expected, actual);
         }
     }
-
-    try client.drainStderr();
 }

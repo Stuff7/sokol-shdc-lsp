@@ -79,7 +79,7 @@ pub fn waitResponse(self: *@This()) !?[]const u8 {
     return header.body(self.res_sink.written());
 }
 
-pub fn drainStderr(self: *@This()) Io.Cancelable!void {
+pub fn drainStderr(self: *@This()) void {
     std.debug.print("\n=== BEGIN SERVER STDERR ===\n", .{});
     while (self.stderr_poller.next()) |chunk| {
         std.debug.print("{s}", .{chunk});

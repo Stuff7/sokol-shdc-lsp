@@ -1,10 +1,10 @@
 const std = @import("std");
 const project = @import("project");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     // Prints to stderr, ignoring potential errors.
     std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
-    try project.bufferedPrint();
+    try project.bufferedPrint(init.io);
 }
 
 test "simple test" {
