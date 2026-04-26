@@ -1,0 +1,88 @@
+const std = @import("std");
+
+const StdoutPoller = @import("../StdoutPoller.zig");
+const Request = @import("Request.zig");
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+
+allocator: std.mem.Allocator,
+child: *std.process.Child,
+stdin_buf: []u8,
+stdin_sink: *Io.File.Writer,
+stdin: *Io.Writer,
+req_sink: Io.Writer.Allocating,
+res_sink: Io.Writer.Allocating,
+res_poller: *StdoutPoller,
+stderr_poller: *StdoutPoller,
+
+pub fn init(allocator: Allocator, io: Io, server_cmd: []const []const u8, workdir: []const u8, timeout_ms: usize) !@This() {
+    var child_proc = try allocator.create(std.process.Child);
+    child_proc.* = try std.process.spawn(io, .{
+        .argv = server_cmd,
+        .stdout = .pipe,
+        .stdin = .pipe,
+        .stderr = .pipe,
+        .cwd = .{ .path = workdir },
+    });
+
+    const stdin_sink = try allocator.create(Io.File.Writer);
+    const stdin_buf = try allocator.alloc(u8, 1024);
+    stdin_sink.* = child_proc.stdin.?.writer(io, stdin_buf);
+
+    return @This(){
+        .allocator = allocator,
+        .child = child_proc,
+        .req_sink = .init(allocator),
+        .res_sink = .init(allocator),
+        .stdin_buf = stdin_buf,
+        .stdin_sink = stdin_sink,
+        .stdin = &stdin_sink.interface,
+        .res_poller = try .create(allocator, io, child_proc.stdout.?, timeout_ms),
+        .stderr_poller = try .create(allocator, io, child_proc.stderr.?, timeout_ms),
+    };
+}
+
+pub fn deinit(self: *@This(), io: Io) void {
+    defer self.allocator.destroy(self.child);
+    self.req_sink.deinit();
+    self.res_sink.deinit();
+    self.res_poller.destroy(self.allocator);
+    self.stderr_poller.destroy(self.allocator);
+    self.allocator.free(self.stdin_buf);
+    self.allocator.destroy(self.stdin_sink);
+    self.child.kill(io);
+}
+
+pub fn sendRequest(self: *@This(), req: anytype, id: ?i64) !void {
+    try Request.stringify(req, id, &self.req_sink.writer);
+    defer self.req_sink.clearRetainingCapacity();
+    const request = self.req_sink.written();
+    try self.stdin.print("Content-Length: {d}\r\n\r\n", .{request.len});
+    try self.stdin.writeAll(request);
+    try self.stdin.flush();
+}
+
+pub fn waitResponse(self: *@This()) !?[]const u8 {
+    self.res_sink.clearRetainingCapacity();
+
+    const header: Request.Header = while (true) {
+        if (try Request.Header.parse(self.res_sink.written())) |h| break h;
+        const chunk = self.res_poller.next() orelse return error.Timeout;
+        try self.res_sink.writer.writeAll(chunk);
+    };
+
+    while (!header.hasBody(self.res_sink.written())) {
+        const chunk = self.res_poller.next() orelse return error.UnexpectedEof;
+        try self.res_sink.writer.writeAll(chunk);
+    }
+
+    return header.body(self.res_sink.written());
+}
+
+pub fn drainStderr(self: *@This()) Io.Cancelable!void {
+    std.debug.print("\n=== BEGIN SERVER STDERR ===\n", .{});
+    while (self.stderr_poller.next()) |chunk| {
+        std.debug.print("{s}", .{chunk});
+    }
+    std.debug.print("\n=== END SERVER STDERR ===\n", .{});
+}

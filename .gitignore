@@ -1,0 +1,9 @@
+zig-out
+.zig-cache
+zig-pkg
+src/shaders/*.glsl.zig
+
+node_modules
+dist
+
+logs

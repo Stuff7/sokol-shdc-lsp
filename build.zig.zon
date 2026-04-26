@@ -1,0 +1,17 @@
+.{
+    .name = .sokol_shdc_lsp,
+    .version = "0.0.0",
+    .fingerprint = 0xc32f820a8ba5c340,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zut = .{
+            .url = "git+https://github.com/Stuff7/zut.git#06379eee3df9344e4c58595721c7b78b247814d7",
+            .hash = "zut-1.0.0-5cLvvkV-AACf6htCTVwCieozQAh34iHVk4ycYHgsjne4",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
