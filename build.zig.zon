@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .zut = .{
-            .url = "git+https://github.com/Stuff7/zut.git#06379eee3df9344e4c58595721c7b78b247814d7",
-            .hash = "zut-1.0.0-5cLvvkV-AACf6htCTVwCieozQAh34iHVk4ycYHgsjne4",
+            .url = "git+https://github.com/Stuff7/zut.git#a7252c63707fa41a3dad951a078990721e3bb1ae",
+            .hash = "zut-1.0.0-5cLvvj6WAAC0d9kQEVfvRRIW9G-xVnEvxH4ofR8jF3RI",
         },
     },
     .paths = .{

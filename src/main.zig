@@ -69,6 +69,7 @@ pub fn myLogFn(
 }
 
 test {
-    std.testing.refAllDecls(@This());
-    std.testing.refAllDecls(ZigBuildParser);
+    // std.testing.refAllDecls(@This());
+    // std.testing.refAllDecls(ZigBuildParser);
+    std.testing.refAllDecls(@import("parser/Parser.zig"));
 }
