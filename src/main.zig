@@ -34,7 +34,7 @@ const ZigBuildParser = @import("ZigBuildParser.zig");
 pub fn main(init: std.process.Init) void {
     const allocator = init.gpa;
 
-    var server = lsp.Server{ .allocator = allocator };
+    var server = lsp.Server{ .allocator = allocator, .state = .init(allocator, init.io) };
     server.run(init.io) catch |err| log.err("Encountered error while running server: {}\n", .{err});
 }
 
@@ -69,7 +69,7 @@ pub fn myLogFn(
 }
 
 test {
-    // std.testing.refAllDecls(@This());
+    std.testing.refAllDecls(@This());
     // std.testing.refAllDecls(ZigBuildParser);
-    std.testing.refAllDecls(@import("parser/Parser.zig"));
+    // std.testing.refAllDecls(@import("parser/ShdcRunner.zig"));
 }

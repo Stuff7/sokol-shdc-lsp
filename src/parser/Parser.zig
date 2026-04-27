@@ -822,12 +822,13 @@ fn resolveReferences(
 pub fn parse(
     parent_allocator: Allocator,
     file: []const u8,
-    source: []const u8,
+    source_in: []const u8,
     slang: []const u8,
 ) !FileAnalysis {
     var arena = std.heap.ArenaAllocator.init(parent_allocator);
     errdefer arena.deinit();
     const allocator = arena.allocator();
+    const source = try allocator.dupe(u8, source_in);
 
     var top_level: std.ArrayList(Declaration) = .empty;
     var scopes: std.ArrayList(Scope) = .empty;
@@ -1085,7 +1086,6 @@ test "parser: basic sokol shader" {
     var analysis = try parse(allocator, "test.glsl", source, "glsl430");
     defer analysis.deinit();
 
-    @import("zut").dbg.dumpOpts(analysis, .minimal);
     // Top-level: @header, @ctype, @program
     try std.testing.expectEqual(@as(usize, 3), analysis.top_level.len);
     try std.testing.expect(analysis.top_level[0].kind == .header);

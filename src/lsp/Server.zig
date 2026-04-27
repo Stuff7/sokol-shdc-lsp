@@ -12,7 +12,7 @@ const Allocator = std.mem.Allocator;
 allocator: Allocator,
 buffer: ArrayList(u8) = ArrayList(u8).empty,
 stdout: ?*std.Io.Writer = undefined,
-state: State = .{},
+state: State,
 
 pub fn deinit(self: *@This()) void {
     self.buffer.deinit(self.allocator);
@@ -25,13 +25,13 @@ fn sendJSON(self: *@This(), content: []const u8) !void {
     const header = try std.fmt.allocPrint(self.allocator, "Content-Length: {d}\r\n\r\n", .{content.len});
     defer self.allocator.free(header);
 
-    log.debug("SEND: {s}\n", .{content});
+    // log.debug("SEND: {s}\n", .{content});
     try self.stdout.?.print("{s}{s}", .{ header, content });
     try self.stdout.?.flush();
 }
 
 fn handleMessage(self: *@This(), message: []const u8) !void {
-    log.debug("RECV: {s}\n", .{message});
+    // log.debug("RECV: {s}\n", .{message});
     const req = try Request.parse(self.allocator, message);
     defer req.deinit();
 
@@ -39,25 +39,28 @@ fn handleMessage(self: *@This(), message: []const u8) !void {
         .initialize => try self.state.createInitResponse(self.allocator, req),
         .completion => try self.state.createCompletionResponse(self.allocator, req),
         .hover => try self.state.createHoverResponse(self.allocator, req),
-        .definition => |params| {
-            var resp = response.Definition{
-                .id = req.id,
-                .result = &.{.{
-                    .uri = params.value.textDocument.uri,
-                    .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 5 } },
-                }},
-            };
-            break :res try resp.stringify(self.allocator);
+        .definition => try self.state.createDefinitionResponse(self.allocator, req),
+        .references => try self.state.createReferencesResponse(self.allocator, req),
+        .document_symbol => try self.state.createDocumentSymbolResponse(self.allocator, req),
+        .did_open => {
+            try self.state.handleDidOpen(self.allocator, req);
+            if (try self.state.createDiagnosticsNotification(self.allocator, req.params.did_open.value.textDocument.uri)) |notif| {
+                defer self.allocator.free(notif);
+                try self.sendJSON(notif);
+            }
+            return;
         },
-        .references => |params| {
-            var resp = response.References{
-                .id = req.id,
-                .result = &.{.{
-                    .uri = params.value.textDocument.uri,
-                    .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 5 } },
-                }},
-            };
-            break :res try resp.stringify(self.allocator);
+        .did_change => {
+            try self.state.handleDidChange(self.allocator, req);
+            if (try self.state.createDiagnosticsNotification(self.allocator, req.params.did_change.value.textDocument.uri)) |notif| {
+                defer self.allocator.free(notif);
+                try self.sendJSON(notif);
+            }
+            return;
+        },
+        .did_close => {
+            self.state.handleDidClose(self.allocator, req);
+            return;
         },
         .implementation => |params| {
             var resp = response.Implementation{
@@ -75,21 +78,6 @@ fn handleMessage(self: *@This(), message: []const u8) !void {
                 .result = &.{.{
                     .uri = params.value.textDocument.uri,
                     .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 5 } },
-                }},
-            };
-            break :res try resp.stringify(self.allocator);
-        },
-        .document_symbol => |params| {
-            var resp = response.DocumentSymbol{
-                .id = req.id,
-                .result = &.{.{
-                    .name = "MySymbol",
-                    .kind = .function,
-                    .location = .{
-                        .uri = params.value.textDocument.uri,
-                        .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 5 } },
-                    },
-                    .containerName = null,
                 }},
             };
             break :res try resp.stringify(self.allocator);
@@ -185,7 +173,7 @@ fn handleMessage(self: *@This(), message: []const u8) !void {
             break :res try resp.stringify(self.allocator);
         },
         else => {
-            log.debug("SKIP: {s}\n", .{message});
+            // log.debug("SKIP: {s}\n", .{message});
             return;
         },
     };

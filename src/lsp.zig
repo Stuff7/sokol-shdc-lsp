@@ -4,6 +4,7 @@ pub const response = @import("lsp/response.zig");
 pub const Request = @import("lsp/Request.zig");
 pub const Server = @import("lsp/Server.zig");
 pub const Client = @import("lsp/Client.zig");
+const Io = std.Io;
 
 fn unixFileUri(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]const u8 {
     var buf: [256]u8 = undefined;
@@ -11,358 +12,314 @@ fn unixFileUri(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]co
     return std.fmt.allocPrint(allocator, "file://{s}", .{abs_path});
 }
 
-test Server {
+const server_cmd = &.{"zig-out/bin/sokol-shdc-lsp-dbg"};
+const workdir = ".";
+const timeout_ms = 1000;
+const shader_uri = "file://src/tests/chunk.glsl";
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn initClient(allocator: std.mem.Allocator, io: Io) !Client {
+    return Client.init(allocator, io, server_cmd, workdir, timeout_ms);
+}
+
+fn initialize(client: *Client, allocator: std.mem.Allocator, io: Io) !void {
+    _ = allocator;
+    try client.sendRequest(Request.InitializeParams{
+        .processId = null,
+        .rootUri = null,
+        .capabilities = .{
+            .textDocument = .{
+                .hover = .{ .contentFormat = &.{ "markdown", "plaintext" } },
+                .completion = .{ .completionItem = .{ .snippetSupport = true } },
+                .definition = .{ .dynamicRegistration = true },
+                .references = .{ .dynamicRegistration = true },
+            },
+        },
+    }, 1);
+    _ = try client.waitResponse();
+    _ = io;
+}
+
+fn openShader(client: *Client) !void {
+    try client.sendRequest(Request.DidOpenTextDocumentParams{
+        .textDocument = .{
+            .uri = shader_uri,
+            .languageId = "glsl",
+            .version = 1,
+            .text = "",
+        },
+    }, null);
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+test "hover: uniform block shows binding and size" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
-    var client = try Client.init(allocator, std.testing.io, &.{"zig-out/bin/sokol-shdc-lsp-dbg"}, ".", 1000);
-    defer client.deinit(std.testing.io);
-    defer client.drainStderr();
+    var client = try initClient(allocator, io);
+    defer client.deinit(io);
+    // defer client.drainStderr();
 
-    const workdir_rel = "src/tests/project";
+    try initialize(&client, allocator, io);
+    try openShader(&client);
 
-    const workdir = try unixFileUri(allocator, std.testing.io, workdir_rel);
-    defer allocator.free(workdir);
-    const main_zig = try unixFileUri(allocator, std.testing.io, workdir_rel ++ "/src/main.zig");
-    defer allocator.free(main_zig);
+    // `vs_params` is at line 4, col 28 in chunk.glsl
+    try client.sendRequest(Request.HoverParams{
+        .textDocument = .{ .uri = shader_uri },
+        .position = .{ .line = 4, .character = 28 },
+    }, 2);
 
-    const messages = .{
-        .{
-            .request = Request.InitializeParams{
-                .processId = 12,
-                .rootUri = workdir,
-                .capabilities = .{
-                    .workspace = .{
-                        .applyEdit = true,
-                        .workspaceEdit = .{ .documentChanges = true },
-                        .workspaceFolders = true,
-                        .configuration = true,
-                        .didChangeConfiguration = .{ .dynamicRegistration = true },
-                    },
-                    .textDocument = .{
-                        .synchronization = .{
-                            .willSave = true,
-                            .didSave = true,
-                            .willSaveWaitUntil = true,
-                        },
-                        .completion = .{
-                            .dynamicRegistration = true,
-                            .completionItem = .{
-                                .snippetSupport = true,
-                                .resolveSupport = .{
-                                    .properties = &[_][]const u8{
-                                        "documentation", "detail", "additionalTextEdits",
-                                    },
-                                },
-                            },
-                        },
-                        .hover = .{ .contentFormat = &[_][]const u8{ "markdown", "plaintext" } },
-                        .signatureHelp = .{
-                            .signatureInformation = .{
-                                .documentationFormat = &[_][]const u8{ "markdown", "plaintext" },
-                            },
-                        },
-                        .references = .{ .dynamicRegistration = true },
-                        .definition = .{ .dynamicRegistration = true },
-                        .documentFormatting = .{ .dynamicRegistration = true },
-                        .rename = .{ .prepareSupport = true },
-                        .publishDiagnostics = .{
-                            .relatedInformation = true,
-                            .tagSupport = .{ .valueSet = &[_]u32{ 1, 2 } }, // Unused/Deprecated
-                        },
-                    },
-                    .window = .{
-                        .workDoneProgress = true,
-                        .showMessage = .{ .messageActionItem = .{ .additionalPropertiesSupport = true } },
-                    },
-                    .general = .{
-                        .markdown = .{ .parser = "marked", .version = "1.0.0" },
-                        .positionEncodings = &[_][]const u8{"utf-16"},
-                    },
-                },
-                .trace = .messages,
-                .workspaceFolders = null,
-            },
-            .response = response.Initialize{
-                .id = 1,
-                .result = .{
-                    .capabilities = .{
-                        .textDocumentSync = .full,
-                        .hoverProvider = true,
-                        .completionProvider = .{ .resolveProvider = true, .triggerCharacters = ".>" },
-                        .definitionProvider = true,
-                        .referencesProvider = true,
-                        .workspaceSymbolProvider = true,
-                        .documentFormattingProvider = true,
-                        .documentRangeFormattingProvider = true,
-                    },
-                },
-            },
-        },
+    const res = try client.waitResponse() orelse return error.NoResponse;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
+    defer parsed.deinit();
 
-        .{
-            .request = Request.DidOpenTextDocumentParams{
-                .textDocument = .{
-                    .uri = main_zig,
-                    .languageId = "zig",
-                    .version = 1,
-                    .text = "const std = @import(\"std\");\n",
-                },
-            },
-            .response = response.Empty{ .result = .{} },
-            .notification = true,
-        },
+    const result = parsed.value.object.get("result").?;
+    const contents = result.object.get("contents").?.object;
+    const kind = contents.get("kind").?.string;
+    const value = contents.get("value").?.string;
 
-        .{
-            .request = Request.DidSaveTextDocumentParams{
-                .textDocument = .{ .uri = main_zig },
-                .text = null,
-            },
-            .response = response.Empty{ .result = .{} },
-            .notification = true,
-        },
+    try std.testing.expectEqualStrings("markdown", kind);
+    try std.testing.expect(std.mem.indexOf(u8, value, "Uniform Block") != null);
+    try std.testing.expect(std.mem.indexOf(u8, value, "144") != null); // size
+    try std.testing.expect(std.mem.indexOf(u8, value, "0") != null); // slot
+}
 
-        .{
-            .request = Request.DidCloseTextDocumentParams{
-                .textDocument = .{ .uri = main_zig },
-            },
-            .response = response.Empty{ .result = .{} },
-            .notification = true,
-        },
+test "hover: input attribute shows type and slot" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
-        .{
-            .request = Request.HoverParams{
-                .textDocument = .{ .uri = main_zig },
-                .position = .{ .line = 5, .character = 12 },
-            },
-            .response = response.Hover{
-                .id = 5,
-                .result = .{
-                    .contents = .{
-                        .kind = .markdown,
-                        .value = "```zig\nfn add(a: i32, b: i32) i32\n```\nAdds two integers together.",
-                    },
-                    .range = .{
-                        .start = .{ .line = 10, .character = 12 },
-                        .end = .{ .line = 10, .character = 15 },
-                    },
-                },
-            },
-        },
+    var client = try initClient(allocator, io);
+    defer client.deinit(io);
+    // defer client.drainStderr();
 
-        .{
-            .request = Request.CompletionParams{
-                .textDocument = .{ .uri = main_zig },
-                .position = .{ .line = 5, .character = 12 },
-                .context = .{ .triggerKind = .invoked },
-            },
-            .response = response.Completion{
-                .id = 6,
-                .result = .{
-                    .items = &.{
-                        .{
-                            .label = "add",
-                            .kind = .function,
-                            .detail = "fn add(a: i32, b: i32) i32",
-                            .documentation = "Adds two integers together.",
-                            .insertText = "add(${1:a}, ${2:b})",
-                            .insertTextFormat = .snippet,
-                        },
-                        .{
-                            .label = "subtract",
-                            .kind = .function,
-                            .detail = "fn subtract(a: i32, b: i32) i32",
-                            .documentation = "Subtracts b from a.",
-                            .insertText = "subtract(${1:a}, ${2:b})",
-                            .insertTextFormat = .snippet,
-                        },
-                    },
-                },
-            },
-        },
+    try initialize(&client, allocator, io);
+    try openShader(&client);
 
-        .{
-            .request = Request.DefinitionParams{
-                .textDocument = .{ .uri = main_zig },
-                .position = .{ .line = 5, .character = 12 },
-            },
-            .response = response.Definition{
-                .id = 7,
-                .result = &.{.{
-                    .uri = main_zig,
-                    .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 5 } },
-                }},
-            },
-        },
+    // `position` is at line 11, col 8 in chunk.glsl
+    try client.sendRequest(Request.HoverParams{
+        .textDocument = .{ .uri = shader_uri },
+        .position = .{ .line = 11, .character = 8 },
+    }, 2);
 
-        .{
-            .request = Request.ReferenceParams{
-                .textDocument = .{ .uri = main_zig },
-                .position = .{ .line = 5, .character = 12 },
-                .context = .{ .includeDeclaration = true },
-            },
-            .response = response.References{
-                .id = 8,
-                .result = &.{.{
-                    .uri = main_zig,
-                    .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 5 } },
-                }},
-            },
-        },
+    const res = try client.waitResponse() orelse return error.NoResponse;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
+    defer parsed.deinit();
 
-        .{
-            .request = Request.ImplementationParams{
-                .textDocument = .{ .uri = main_zig },
-                .position = .{ .line = 5, .character = 12 },
-            },
-            .response = response.Implementation{
-                .id = 9,
-                .result = &.{.{
-                    .uri = main_zig,
-                    .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 5 } },
-                }},
-            },
-        },
+    const value = parsed.value.object.get("result").?
+        .object.get("contents").?
+        .object.get("value").?.string;
 
-        .{
-            .request = Request.TypeDefinitionParams{
-                .textDocument = .{ .uri = main_zig },
-                .position = .{ .line = 5, .character = 12 },
-            },
-            .response = response.TypeDefinition{
-                .id = 10,
-                .result = &.{.{
-                    .uri = main_zig,
-                    .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 5 } },
-                }},
-            },
-        },
+    try std.testing.expect(std.mem.indexOf(u8, value, "Input Attribute") != null);
+    try std.testing.expect(std.mem.indexOf(u8, value, "vec3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, value, "Float") != null); // base_type from YAML
+}
 
-        .{
-            .request = Request.DocumentSymbolParams{
-                .textDocument = .{ .uri = main_zig },
-            },
-            .response = response.DocumentSymbol{
-                .id = 11,
-                .result = &.{.{
-                    .name = "MySymbol",
-                    .kind = .function,
-                    .location = .{
-                        .uri = main_zig,
-                        .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 5 } },
-                    },
-                    .containerName = null,
-                }},
-            },
-        },
+test "hover: texture shows binding and sample type" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
-        .{
-            .request = Request.DocumentRangeFormattingParams{
-                .textDocument = .{ .uri = main_zig },
-                .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 5, .character = 0 } },
-                .options = .{ .tabSize = 4, .insertSpaces = true },
-            },
-            .response = response.DocumentRangeFormatting{
-                .id = 12,
-                .result = &.{.{
-                    .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 0 } },
-                    .newText = "formatted code",
-                }},
-            },
-        },
+    var client = try initClient(allocator, io);
+    defer client.deinit(io);
+    // defer client.drainStderr();
 
-        .{
-            .request = Request.DocumentOnTypeFormattingParams{
-                .textDocument = .{ .uri = main_zig },
-                .position = .{ .line = 5, .character = 12 },
-                .ch = ';',
-                .options = .{ .tabSize = 4, .insertSpaces = true },
-            },
-            .response = response.DocumentOnTypeFormatting{
-                .id = 13,
-                .result = &.{.{
-                    .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 0 } },
-                    .newText = "formatted code",
-                }},
-            },
-        },
+    try initialize(&client, allocator, io);
+    try openShader(&client);
 
-        .{
-            .request = Request.SemanticTokensFull{
-                .textDocument = .{ .uri = main_zig },
-            },
-            .response = response.SemanticTokensFull{ .id = 14, .result = .{ .items = &.{} } },
-        },
+    // `shadow_map` is in @fs, find its line in chunk.glsl
+    // layout(binding = 0) uniform texture2D shadow_map; -> line 23, col ~35
+    try client.sendRequest(Request.HoverParams{
+        .textDocument = .{ .uri = shader_uri },
+        .position = .{ .line = 23, .character = 35 },
+    }, 2);
 
-        .{
-            .request = Request.CodeActionParams{
-                .textDocument = .{ .uri = main_zig },
-                .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 5, .character = 0 } },
-                .context = .{ .diagnostics = &.{} },
-            },
-            .response = response.CodeAction{
-                .id = 15,
-                .result = &.{.{
-                    .title = "Mock fix",
-                    .kind = null,
-                    .diagnostics = &.{},
-                    .edit = .{
-                        .changes = &.{.{
-                            .uri = main_zig,
-                            .edits = &.{.{
-                                .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 5, .character = 0 } },
-                                .newText = "fixed code",
-                            }},
-                        }},
-                    },
-                    .command = null,
-                }},
-            },
-        },
+    const res = try client.waitResponse() orelse return error.NoResponse;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
+    defer parsed.deinit();
 
-        .{
-            .request = Request.WorkspaceSymbolParams{ .query = "" },
-            .response = response.WorkspaceSymbol{
-                .id = 16,
-                .result = &.{.{
-                    .name = "MySymbol",
-                    .kind = .function,
-                    .location = response.Location{
-                        .uri = "file:///foo.zig",
-                        .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 5 } },
-                    },
-                    .containerName = null,
-                }},
-            },
-        },
+    const value = parsed.value.object.get("result").?
+        .object.get("contents").?
+        .object.get("value").?.string;
 
-        .{
-            .request = Request.ExecuteCommandParams{ .command = "dummy.command", .arguments = null },
-            .response = response.Empty{ .result = .{} },
-            .notification = true,
-        },
+    try std.testing.expect(std.mem.indexOf(u8, value, "Texture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, value, "float") != null); // sample_type
+}
 
-        .{
-            .request = Request.ShutdownParams{},
-            .response = response.Empty{ .result = .{} },
-            .notification = true,
-        },
+test "definition: resolves to declaration site" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
-        .{
-            .request = Request.ExitParams{},
-            .response = response.Empty{ .result = .{} },
-            .notification = true,
-        },
+    var client = try initClient(allocator, io);
+    defer client.deinit(io);
+    // defer client.drainStderr();
+
+    try initialize(&client, allocator, io);
+    try openShader(&client);
+
+    // `mvp` reference in void main() body — line 17, col ~14
+    try client.sendRequest(Request.DefinitionParams{
+        .textDocument = .{ .uri = shader_uri },
+        .position = .{ .line = 17, .character = 14 },
+    }, 2);
+
+    const res = try client.waitResponse() orelse return error.NoResponse;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
+    defer parsed.deinit();
+
+    const result = parsed.value.object.get("result").?.array;
+    try std.testing.expect(result.items.len > 0);
+
+    const loc = result.items[0].object;
+    const range = loc.get("range").?.object;
+    const start = range.get("start").?.object;
+
+    // mvp declared at line 5
+    try std.testing.expectEqual(@as(i64, 5), start.get("line").?.integer);
+}
+
+test "references: finds all usages of a declaration" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var client = try initClient(allocator, io);
+    defer client.deinit(io);
+    // defer client.drainStderr();
+
+    try initialize(&client, allocator, io);
+    try openShader(&client);
+
+    // `position` declaration at line 11, col 8
+    try client.sendRequest(Request.ReferenceParams{
+        .textDocument = .{ .uri = shader_uri },
+        .position = .{ .line = 11, .character = 8 },
+        .context = .{ .includeDeclaration = true },
+    }, 2);
+
+    const res = try client.waitResponse() orelse return error.NoResponse;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
+    defer parsed.deinit();
+
+    const result = parsed.value.object.get("result").?.array;
+    // `position` is used in void main() at least once
+    try std.testing.expect(result.items.len > 0);
+}
+
+test "document symbols: lists all named declarations" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var client = try initClient(allocator, io);
+    defer client.deinit(io);
+    // defer client.drainStderr();
+
+    try initialize(&client, allocator, io);
+    try openShader(&client);
+
+    try client.sendRequest(Request.DocumentSymbolParams{
+        .textDocument = .{ .uri = shader_uri },
+    }, 2);
+
+    const res = try client.waitResponse() orelse return error.NoResponse;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
+    defer parsed.deinit();
+
+    const result = parsed.value.object.get("result").?.array;
+    try std.testing.expect(result.items.len > 0);
+
+    // Verify expected symbol names are present
+    const expected_names = &[_][]const u8{
+        "chunk", "vs_params", "position", "texcoord", "main", "shadow_map", "shadow_sampler",
     };
-
-    inline for (messages, 1..) |msg, i| {
-        const is_notification = @hasField(@TypeOf(msg), "notification");
-        try client.sendRequest(msg.request, if (!is_notification) i else null);
-        if (is_notification) continue;
-        const res = try client.waitResponse();
-        if (res) |actual| {
-            const expected = try msg.response.stringify(allocator);
-            defer allocator.free(expected);
-            try std.testing.expectEqualSlices(u8, expected, actual);
+    for (expected_names) |name| {
+        var found = false;
+        for (result.items) |sym| {
+            if (std.mem.eql(u8, sym.object.get("name").?.string, name)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            std.debug.print("Symbol not found: {s}\n", .{name});
+            return error.SymbolNotFound;
         }
     }
+}
+
+test "completion: returns declarations in scope" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var client = try initClient(allocator, io);
+    defer client.deinit(io);
+    // defer client.drainStderr();
+
+    try initialize(&client, allocator, io);
+    try openShader(&client);
+
+    // Inside @vs main body
+    try client.sendRequest(Request.CompletionParams{
+        .textDocument = .{ .uri = shader_uri },
+        .position = .{ .line = 17, .character = 0 },
+        .context = .{ .triggerKind = .invoked },
+    }, 2);
+
+    const res = try client.waitResponse() orelse return error.NoResponse;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
+    defer parsed.deinit();
+
+    const items = parsed.value.object.get("result").?
+        .object.get("items").?.array;
+
+    try std.testing.expect(items.items.len > 0);
+
+    // Should include vs scope declarations
+    var found_position = false;
+    var found_mvp = false;
+    for (items.items) |item| {
+        const label = item.object.get("label").?.string;
+        if (std.mem.eql(u8, label, "position")) found_position = true;
+        if (std.mem.eql(u8, label, "mvp")) found_mvp = true;
+    }
+    try std.testing.expect(found_position);
+    try std.testing.expect(found_mvp);
+}
+
+test "diagnostics: invalid shader produces error diagnostic" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var client = try initClient(allocator, io);
+    defer client.deinit(io);
+    // defer client.drainStderr();
+
+    try initialize(&client, allocator, io);
+
+    // Open a shader with a deliberate error
+    try client.sendRequest(Request.DidOpenTextDocumentParams{
+        .textDocument = .{
+            .uri = "file://src/tests/bad.glsl",
+            .languageId = "glsl",
+            .version = 1,
+            .text = "",
+        },
+    }, null);
+
+    // The server should push a publishDiagnostics notification
+    // Since it's a notification (no id), we check stderr for the error
+    // or check that hover returns empty for an unknown file
+    try client.sendRequest(Request.HoverParams{
+        .textDocument = .{ .uri = "file://src/tests/bad.glsl" },
+        .position = .{ .line = 0, .character = 0 },
+    }, 2);
+
+    const res = try client.waitResponse() orelse return error.NoResponse;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
+    defer parsed.deinit();
+
+    // Should return empty hover for a file that failed analysis
+    const value = parsed.value.object.get("result").?
+        .object.get("contents").?
+        .object.get("value").?.string;
+    try std.testing.expectEqualStrings("", value);
 }

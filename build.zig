@@ -6,6 +6,7 @@ pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
 
     const dep_zut = b.dependency("zut", .{ .target = target, .optimize = optimize });
+    const dep_yaml = b.dependency("yaml", .{ .target = target, .optimize = optimize });
 
     const NAME = "sokol-shdc-lsp";
     const suffix = switch (optimize) {
@@ -21,6 +22,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "zut", .module = dep_zut.module("zut") },
+            .{ .name = "yaml", .module = dep_yaml.module("yaml") },
         },
     });
 

@@ -120,6 +120,7 @@ pub const Params = union(enum) {
 
     did_open: json.Parsed(DidOpenTextDocumentParams),
     did_save: json.Parsed(DidSaveTextDocumentParams),
+    did_change: json.Parsed(DidChangeTextDocumentParams),
     did_close: json.Parsed(DidCloseTextDocumentParams),
     workspace_symbol: json.Parsed(WorkspaceSymbolParams),
     execute_command: json.Parsed(ExecuteCommandParams),
@@ -370,6 +371,17 @@ pub const DidSaveTextDocumentParams = struct {
 
     textDocument: TextDocumentIdentifier,
     text: ?[]const u8,
+};
+
+pub const TextDocumentContentChangeEvent = struct {
+    text: []const u8,
+};
+
+pub const DidChangeTextDocumentParams = struct {
+    pub const method = "textDocument/didChange";
+
+    textDocument: VersionedTextDocumentIdentifier,
+    contentChanges: []TextDocumentContentChangeEvent,
 };
 
 pub const DidCloseTextDocumentParams = struct {
