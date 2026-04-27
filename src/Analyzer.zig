@@ -285,7 +285,7 @@ pub const NodeData = union(enum) {
             .@"continue", .@"break" => .{ .opt_token_and_opt_node = data.opt_token_and_opt_node },
             .@"comptime", .@"nosuspend" => .{ .node = data.node },
             else => {
-                std.log.err("Unhandled NodeData tag: {any}\n", .{tag});
+                std.log.err("Unhandled NodeData tag: {any}", .{tag});
                 unreachable;
             },
         };

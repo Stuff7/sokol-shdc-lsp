@@ -33,7 +33,7 @@ pub fn create(allocator: Allocator, io: Io, env: *std.process.Environ.Map, workd
     const zig_exe_path = proc.findZigPath(allocator, io, env) orelse return error.ZigPathNotFound;
     defer allocator.free(zig_exe_path);
 
-    log.info("Workdir: {s}\nZig Exe: {s}\n", .{ workdir, zig_exe_path });
+    log.info("Workdir: {s}\nZig Exe: {s}", .{ workdir, zig_exe_path });
 
     const cmd: []const []const u8 = &.{
         zig_exe_path,
@@ -92,7 +92,7 @@ pub fn destroy(self: *@This(), io: Io) void {
 
     if (self.child_process.id) |id| {
         proc.killProcessTree(io, id, self.child_process) catch
-            log.err("Failed to close zig process tree\n", .{});
+            log.err("Failed to close zig process tree", .{});
     }
 }
 
@@ -112,7 +112,7 @@ fn swapState(self: *@This()) void {
 }
 
 fn handleChunk(self: *@This(), body: []const u8) !void {
-    // log.debug("=== BODY ===\n{s}\n============\n", .{body});
+    // log.debug("=== BODY ===\n{s}\n============", .{body});
     var r = Io.Reader.fixed(body);
     _ = r.discardDelimiterInclusive('\n') catch return error.UnexpectedBuildOutput;
     _ = r.discardDelimiterInclusive('\n') catch return error.UnexpectedBuildOutput;
@@ -154,7 +154,7 @@ fn readBuildOutput(self: *@This(), io: Io) void {
         const second = std.mem.indexOf(u8, rest, delimiter) orelse continue;
 
         const message = data[first .. first + delimiter.len + second];
-        self.handleChunk(message) catch |err| log.err("Error handling chunk: {}\n", .{err});
+        self.handleChunk(message) catch |err| log.err("Error handling chunk: {}", .{err});
 
         var r = Io.Reader.fixed(data);
         r.toss(first + delimiter.len + second);
@@ -162,7 +162,7 @@ fn readBuildOutput(self: *@This(), io: Io) void {
         buf.writer.writeAll(r.buffered()) catch continue;
     }
 
-    log.debug("Zig build parser thread has exited\n", .{});
+    log.debug("Zig build parser thread has exited", .{});
 }
 
 const Diagnostic = struct {
@@ -212,7 +212,7 @@ fn onStateChange(state: *const State, ctx: ?*anyopaque) void {
     defer done.store(true, .release);
 
     std.testing.expect(state.diagnostics.items.len == 5) catch {
-        log.err("Expected 5 diagnostics got {}\n", .{state.diagnostics.items.len});
+        log.err("Expected 5 diagnostics got {}", .{state.diagnostics.items.len});
         return;
     };
 
@@ -281,15 +281,15 @@ fn onStateChange(state: *const State, ctx: ?*anyopaque) void {
 
     for (expected_diagnostics, state.diagnostics.items, 0..) |expected, actual, i| {
         std.testing.expectEqualDeep(expected, actual) catch {
-            log.err(ansi("Expected Diagnostic[{}]:\n", "1"), .{i});
+            log.err(ansi("Expected Diagnostic[{}]:", "1"), .{i});
             dump(expected);
-            log.err(ansi("Got Diagnostic[{}]:\n", "1"), .{i});
+            log.err(ansi("Got Diagnostic[{}]:", "1"), .{i});
             dump(actual);
             return;
         };
     }
 
-    log.info(ansi("Diagnostics are as expected\n", "1;32"), .{});
+    log.info(ansi("Diagnostics are as expected", "1;32"), .{});
 }
 
 test "run ZigBuildParser" {

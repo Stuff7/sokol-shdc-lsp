@@ -25,13 +25,13 @@ fn sendJSON(self: *@This(), content: []const u8) !void {
     const header = try std.fmt.allocPrint(self.allocator, "Content-Length: {d}\r\n\r\n", .{content.len});
     defer self.allocator.free(header);
 
-    // log.debug("SEND: {s}\n", .{content});
+    log.debug("SEND: {s}", .{content});
     try self.stdout.?.print("{s}{s}", .{ header, content });
     try self.stdout.?.flush();
 }
 
 fn handleMessage(self: *@This(), message: []const u8) !void {
-    // log.debug("RECV: {s}\n", .{message});
+    log.debug("RECV: {s}", .{message});
     const req = try Request.parse(self.allocator, message);
     defer req.deinit();
 
@@ -173,7 +173,7 @@ fn handleMessage(self: *@This(), message: []const u8) !void {
             break :res try resp.stringify(self.allocator);
         },
         else => {
-            // log.debug("SKIP: {s}\n", .{message});
+            log.debug("SKIP: {s}", .{message});
             return;
         },
     };

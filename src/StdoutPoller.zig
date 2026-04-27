@@ -51,15 +51,17 @@ pub fn deinit(self: *@This()) void {
 }
 
 pub fn next(self: *@This()) ?[]const u8 {
-    const timeout: Io.Timeout = .{ .duration = .{
-        .raw = .{ .nanoseconds = @as(i96, self.timeout_ms) * std.time.ns_per_ms },
-        .clock = .awake,
-    } };
+    const timeout = Io.Timeout{
+        .duration = .{
+            .raw = .{ .nanoseconds = @as(i96, self.timeout_ms) * std.time.ns_per_ms },
+            .clock = .awake,
+        },
+    };
 
     self.mr.fill(1, timeout) catch |err| switch (err) {
         error.Timeout, error.EndOfStream => return null,
         else => {
-            log.err("Failed to poll process stdout: {}\n", .{err});
+            log.err("Failed to poll process stdout: {}", .{err});
             return null;
         },
     };
@@ -70,7 +72,7 @@ pub fn next(self: *@This()) ?[]const u8 {
 
     self.sink.clearRetainingCapacity();
     self.sink.writer.writeAll(available) catch |err| {
-        log.err("Failed to write stdout data: {}\n", .{err});
+        log.err("Failed to write stdout data: {}", .{err});
         return null;
     };
     r.tossBuffered();

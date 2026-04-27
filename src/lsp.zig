@@ -13,14 +13,12 @@ fn unixFileUri(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]co
 }
 
 const server_cmd = &.{"zig-out/bin/sokol-shdc-lsp-dbg"};
-const workdir = ".";
-const timeout_ms = 1000;
 const shader_uri = "file://src/tests/chunk.glsl";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn initClient(allocator: std.mem.Allocator, io: Io) !Client {
-    return Client.init(allocator, io, server_cmd, workdir, timeout_ms);
+    return Client.init(allocator, io, server_cmd, .{});
 }
 
 fn initialize(client: *Client, allocator: std.mem.Allocator, io: Io) !void {
@@ -52,15 +50,13 @@ fn openShader(client: *Client) !void {
     }, null);
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 test "hover: uniform block shows binding and size" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
     var client = try initClient(allocator, io);
     defer client.deinit(io);
-    // defer client.drainStderr();
+    defer client.drainStderr();
 
     try initialize(&client, allocator, io);
     try openShader(&client);
@@ -92,7 +88,7 @@ test "hover: input attribute shows type and slot" {
 
     var client = try initClient(allocator, io);
     defer client.deinit(io);
-    // defer client.drainStderr();
+    defer client.drainStderr();
 
     try initialize(&client, allocator, io);
     try openShader(&client);
@@ -100,7 +96,7 @@ test "hover: input attribute shows type and slot" {
     // `position` is at line 11, col 8 in chunk.glsl
     try client.sendRequest(Request.HoverParams{
         .textDocument = .{ .uri = shader_uri },
-        .position = .{ .line = 11, .character = 8 },
+        .position = .{ .line = 10, .character = 8 },
     }, 2);
 
     const res = try client.waitResponse() orelse return error.NoResponse;
@@ -122,7 +118,7 @@ test "hover: texture shows binding and sample type" {
 
     var client = try initClient(allocator, io);
     defer client.deinit(io);
-    // defer client.drainStderr();
+    defer client.drainStderr();
 
     try initialize(&client, allocator, io);
     try openShader(&client);
@@ -131,7 +127,7 @@ test "hover: texture shows binding and sample type" {
     // layout(binding = 0) uniform texture2D shadow_map; -> line 23, col ~35
     try client.sendRequest(Request.HoverParams{
         .textDocument = .{ .uri = shader_uri },
-        .position = .{ .line = 23, .character = 35 },
+        .position = .{ .line = 23, .character = 39 },
     }, 2);
 
     const res = try client.waitResponse() orelse return error.NoResponse;
@@ -152,7 +148,7 @@ test "definition: resolves to declaration site" {
 
     var client = try initClient(allocator, io);
     defer client.deinit(io);
-    // defer client.drainStderr();
+    defer client.drainStderr();
 
     try initialize(&client, allocator, io);
     try openShader(&client);
@@ -160,7 +156,7 @@ test "definition: resolves to declaration site" {
     // `mvp` reference in void main() body — line 17, col ~14
     try client.sendRequest(Request.DefinitionParams{
         .textDocument = .{ .uri = shader_uri },
-        .position = .{ .line = 17, .character = 14 },
+        .position = .{ .line = 16, .character = 16 },
     }, 2);
 
     const res = try client.waitResponse() orelse return error.NoResponse;
@@ -184,7 +180,7 @@ test "references: finds all usages of a declaration" {
 
     var client = try initClient(allocator, io);
     defer client.deinit(io);
-    // defer client.drainStderr();
+    defer client.drainStderr();
 
     try initialize(&client, allocator, io);
     try openShader(&client);
@@ -211,7 +207,7 @@ test "document symbols: lists all named declarations" {
 
     var client = try initClient(allocator, io);
     defer client.deinit(io);
-    // defer client.drainStderr();
+    defer client.drainStderr();
 
     try initialize(&client, allocator, io);
     try openShader(&client);
@@ -252,7 +248,7 @@ test "completion: returns declarations in scope" {
 
     var client = try initClient(allocator, io);
     defer client.deinit(io);
-    // defer client.drainStderr();
+    defer client.drainStderr();
 
     try initialize(&client, allocator, io);
     try openShader(&client);
@@ -291,7 +287,7 @@ test "diagnostics: invalid shader produces error diagnostic" {
 
     var client = try initClient(allocator, io);
     defer client.deinit(io);
-    // defer client.drainStderr();
+    defer client.drainStderr();
 
     try initialize(&client, allocator, io);
 

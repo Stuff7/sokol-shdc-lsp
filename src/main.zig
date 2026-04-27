@@ -44,6 +44,11 @@ fn onDiagnostics(state: *const ZigBuildParser.State, _: ?*anyopaque) void {
 
 pub const std_options: std.Options = .{
     .log_level = if (builtin.mode == .Debug) .debug else .info,
+    .log_scope_levels = &.{
+        .{ .scope = .yaml, .level = .warn },
+        .{ .scope = .tokenizer, .level = .warn },
+        .{ .scope = .parser, .level = .warn },
+    },
     .logFn = myLogFn,
 };
 
@@ -65,11 +70,9 @@ pub fn myLogFn(
         .debug => "38;5;245", // gray
     });
 
-    std.debug.print(f, args);
+    std.debug.print(f ++ "\n", args);
 }
 
 test {
     std.testing.refAllDecls(@This());
-    // std.testing.refAllDecls(ZigBuildParser);
-    // std.testing.refAllDecls(@import("parser/ShdcRunner.zig"));
 }

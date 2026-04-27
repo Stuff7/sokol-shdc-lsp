@@ -401,7 +401,7 @@ pub fn handleDidOpen(self: *Self, allocator: Allocator, req: Request) Error!void
     std.debug.assert(req.params == .did_open);
     const uri = req.params.did_open.value.textDocument.uri;
     self.analyzeFile(allocator, uri) catch |err| {
-        std.log.err("Failed to analyze {s}: {}\n", .{ uri, err });
+        std.log.err("Failed to analyze {s}: {}", .{ uri, err });
     };
 }
 
@@ -409,7 +409,7 @@ pub fn handleDidChange(self: *Self, allocator: Allocator, req: Request) Error!vo
     std.debug.assert(req.params == .did_change);
     const uri = req.params.did_change.value.textDocument.uri;
     self.analyzeFile(allocator, uri) catch |err| {
-        std.log.err("Failed to analyze {s}: {}\n", .{ uri, err });
+        std.log.err("Failed to analyze {s}: {}", .{ uri, err });
     };
 }
 

@@ -14,15 +14,22 @@ req_sink: Io.Writer.Allocating,
 res_sink: Io.Writer.Allocating,
 res_poller: *StdoutPoller,
 stderr_poller: *StdoutPoller,
+io: Io,
 
-pub fn init(allocator: Allocator, io: Io, server_cmd: []const []const u8, workdir: []const u8, timeout_ms: usize) !@This() {
+pub const Options = struct {
+    workdir: []const u8 = ".",
+    stdout_timeout_ms: usize = 300,
+    stderr_timeout_ms: usize = 100,
+};
+
+pub fn init(allocator: Allocator, io: Io, server_cmd: []const []const u8, opts: Options) !@This() {
     var child_proc = try allocator.create(std.process.Child);
     child_proc.* = try std.process.spawn(io, .{
         .argv = server_cmd,
         .stdout = .pipe,
         .stdin = .pipe,
         .stderr = .pipe,
-        .cwd = .{ .path = workdir },
+        .cwd = .{ .path = opts.workdir },
     });
 
     const stdin_sink = try allocator.create(Io.File.Writer);
@@ -37,8 +44,9 @@ pub fn init(allocator: Allocator, io: Io, server_cmd: []const []const u8, workdi
         .stdin_buf = stdin_buf,
         .stdin_sink = stdin_sink,
         .stdin = &stdin_sink.interface,
-        .res_poller = try .create(allocator, io, child_proc.stdout.?, timeout_ms),
-        .stderr_poller = try .create(allocator, io, child_proc.stderr.?, timeout_ms),
+        .res_poller = try .create(allocator, io, child_proc.stdout.?, opts.stdout_timeout_ms),
+        .stderr_poller = try .create(allocator, io, child_proc.stderr.?, opts.stderr_timeout_ms),
+        .io = io,
     };
 }
 
@@ -80,9 +88,19 @@ pub fn waitResponse(self: *@This()) !?[]const u8 {
 }
 
 pub fn drainStderr(self: *@This()) void {
-    std.debug.print("\n=== BEGIN SERVER STDERR ===\n", .{});
+    const timeout = self.stderr_poller.timeout_ms;
+    // Do not wait if there's no chunk ready on the first poll
+    self.stderr_poller.timeout_ms = 0;
+
+    var has_stderr = false;
     while (self.stderr_poller.next()) |chunk| {
+        if (!has_stderr) {
+            std.debug.print("=== BEGIN SERVER STDERR ===\n", .{});
+            has_stderr = true;
+        }
+        self.stderr_poller.timeout_ms = timeout;
         std.debug.print("{s}", .{chunk});
     }
-    std.debug.print("\n=== END SERVER STDERR ===\n", .{});
+
+    if (has_stderr) std.debug.print("===  END SERVER STDERR  ===\n", .{});
 }

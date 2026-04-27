@@ -52,19 +52,19 @@ pub fn findZigPath(allocator: Allocator, io: Io, env: *std.process.Environ.Map) 
 
 pub fn waitForProcess(io: Io, process: *Child, process_name: []const u8) bool {
     const result = process.wait(io) catch |err| {
-        std.log.warn("Failed to wait for {s}: {}\n", .{ process_name, err });
+        std.log.warn("Failed to wait for {s}: {}", .{ process_name, err });
         return false;
     };
 
     switch (result) {
         .exited => |code| {
             if (code != 0) {
-                std.log.warn("{s} failed with exit code: {}\n", .{ process_name, code });
+                std.log.warn("{s} failed with exit code: {}", .{ process_name, code });
                 return false;
             }
         },
         else => {
-            std.log.warn("{s} terminated abnormally: {}\n", .{ process_name, result });
+            std.log.warn("{s} terminated abnormally: {}", .{ process_name, result });
             return false;
         },
     }
