@@ -36,7 +36,7 @@ fn handleMessage(self: *@This(), message: []const u8) !void {
     };
     defer req.deinit();
 
-    const res_bytes = res: switch (req.params) {
+    const res_bytes = switch (req.params) {
         .initialize => try self.state.createInitResponse(self.allocator, req),
         .completion => try self.state.createCompletionResponse(self.allocator, req),
         .hover => try self.state.createHoverResponse(self.allocator, req),
@@ -53,122 +53,30 @@ fn handleMessage(self: *@This(), message: []const u8) !void {
         },
         .did_change => {
             try self.state.handleDidChange(self.allocator, req);
-            if (try self.state.createDiagnosticsNotification(self.allocator, req.params.did_change.value.textDocument.uri)) |notif| {
+            const refresh_bytes = try std.json.Stringify.valueAlloc(self.allocator, response.SemanticTokensRefresh{}, .{});
+            defer self.allocator.free(refresh_bytes);
+            try self.sendJSON(refresh_bytes);
+            return;
+        },
+        .did_save => {
+            try self.state.handleDidSave(self.allocator, req);
+            const uri = req.params.did_save.value.textDocument.uri;
+            if (try self.state.createDiagnosticsNotification(self.allocator, uri)) |notif| {
                 defer self.allocator.free(notif);
                 try self.sendJSON(notif);
             }
+            const refresh_bytes = try std.json.Stringify.valueAlloc(self.allocator, response.SemanticTokensRefresh{}, .{});
+            defer self.allocator.free(refresh_bytes);
+            try self.sendJSON(refresh_bytes);
             return;
         },
         .did_close => {
             self.state.handleDidClose(self.allocator, req);
             return;
         },
-        .implementation => |params| {
-            const resp = response.Implementation{
-                .id = req.id,
-                .result = &.{.{
-                    .uri = params.value.textDocument.uri,
-                    .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 5 } },
-                }},
-            };
-            break :res try json.Stringify.valueAlloc(self.allocator, resp, .{});
-        },
-        .type_definition => |params| {
-            const resp = response.TypeDefinition{
-                .id = req.id,
-                .result = &.{.{
-                    .uri = params.value.textDocument.uri,
-                    .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 5 } },
-                }},
-            };
-            break :res try json.Stringify.valueAlloc(self.allocator, resp, .{});
-        },
-        .workspace_symbol => {
-            const resp = response.WorkspaceSymbol{
-                .id = req.id,
-                .result = &.{.{
-                    .name = "MySymbol",
-                    .kind = .function,
-                    .location = response.Location{
-                        .uri = "file:///foo.zig",
-                        .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 5 } },
-                    },
-                    .containerName = null,
-                }},
-            };
-            break :res try json.Stringify.valueAlloc(self.allocator, resp, .{});
-        },
-        .formatting => {
-            const edit = common.TextEdit{
-                .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 0 } },
-                .newText = "formatted code",
-            };
-            const resp = response.DocumentFormatting{ .id = req.id, .result = &.{edit} };
-            break :res try json.Stringify.valueAlloc(self.allocator, resp, .{});
-        },
-        .range_formatting => {
-            const resp = response.DocumentRangeFormatting{
-                .id = req.id,
-                .result = &.{.{
-                    .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 0 } },
-                    .newText = "formatted code",
-                }},
-            };
-            break :res try json.Stringify.valueAlloc(self.allocator, resp, .{});
-        },
-        .on_type_formatting => {
-            const resp = response.DocumentOnTypeFormatting{
-                .id = req.id,
-                .result = &.{.{
-                    .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 0 } },
-                    .newText = "formatted code",
-                }},
-            };
-            break :res try json.Stringify.valueAlloc(self.allocator, resp, .{});
-        },
-        .rename => |params| {
-            const resp = response.Rename{
-                .id = req.id,
-                .result = .{
-                    .changes = &.{.{
-                        .uri = params.value.textDocument.uri,
-                        .edits = &.{.{
-                            .range = .{
-                                .start = params.value.position,
-                                .end = params.value.position,
-                            },
-                            .newText = params.value.newName,
-                        }},
-                    }},
-                },
-            };
-            break :res try json.Stringify.valueAlloc(self.allocator, resp, .{});
-        },
-        .code_action => |params| {
-            const resp = response.CodeAction{
-                .id = req.id,
-                .result = &.{.{
-                    .title = "Mock fix",
-                    .kind = null,
-                    .diagnostics = params.value.context.diagnostics,
-                    .edit = .{
-                        .changes = &.{.{
-                            .uri = params.value.textDocument.uri,
-                            .edits = &.{.{
-                                .range = params.value.range,
-                                .newText = "fixed code",
-                            }},
-                        }},
-                    },
-                    .command = null,
-                }},
-            };
-            break :res try json.Stringify.valueAlloc(self.allocator, resp, .{});
-        },
-        .semantic_tokens_full => {
-            const resp = response.SemanticTokensFull{ .id = req.id, .result = .{ .data = &.{} } };
-            break :res try json.Stringify.valueAlloc(self.allocator, resp, .{});
-        },
+        .semantic_tokens_full => try self.state.createSemanticTokensResponse(self.allocator, req),
+        .rename => try self.state.createRenameResponse(self.allocator, req),
+        .shutdown => try json.Stringify.valueAlloc(self.allocator, response.NullResult{ .id = req.id }, .{}),
         else => {
             log.debug("SKIP: {s}", .{message});
             return;

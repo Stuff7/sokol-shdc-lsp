@@ -28,8 +28,13 @@ in vec2 frag_uv;
 in vec3 frag_normal;
 out vec4 frag_color;
 
+float xd(float a) {
+  return a;
+}
+
 void main() {
   frag_color = texture(sampler2D(shadow_map, shadow_sampler), frag_uv);
+  float x = xd(9);
 }
 @end
 

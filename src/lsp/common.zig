@@ -80,6 +80,22 @@ pub const WorkspaceEditChange = struct {
 
 pub const WorkspaceEdit = struct {
     changes: ?[]const WorkspaceEditChange = null,
+
+    pub fn jsonStringify(self: @This(), s: anytype) !void {
+        try s.beginObject();
+        try s.objectField("changes");
+        if (self.changes) |changes| {
+            try s.beginObject();
+            for (changes) |change| {
+                try s.objectField(change.uri);
+                try s.write(change.edits);
+            }
+            try s.endObject();
+        } else {
+            try s.write(null);
+        }
+        try s.endObject();
+    }
 };
 
 pub const WorkspaceFolder = struct {

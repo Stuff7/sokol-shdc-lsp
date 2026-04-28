@@ -35,6 +35,18 @@ pub const Initialize = struct {
         documentFormattingProvider: bool = true,
         documentRangeFormattingProvider: bool = true,
         completionProvider: ?CompletionProvider = null,
+        semanticTokensProvider: ?SemanticTokensProvider = null,
+        renameProvider: bool = true,
+
+        pub const SemanticTokensProvider = struct {
+            legend: Legend,
+            full: bool = true,
+
+            pub const Legend = struct {
+                tokenTypes: []const []const u8,
+                tokenModifiers: []const []const u8 = &.{},
+            };
+        };
 
         pub const TextDocumentSync = enum(u2) {
             none,
@@ -73,6 +85,11 @@ pub const SemanticTokensFull = struct {
         resultId: ?[]const u8 = null,
         data: []const u32 = &.{},
     };
+};
+
+pub const SemanticTokensRefresh = struct {
+    jsonrpc: []const u8 = "2.0",
+    method: []const u8 = "workspace/semanticTokens/refresh",
 };
 
 pub const Hover = struct {

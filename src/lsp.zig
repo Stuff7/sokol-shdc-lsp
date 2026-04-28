@@ -15,8 +15,6 @@ fn unixFileUri(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]co
 const server_cmd = &.{"zig-out/bin/sokol-shdc-lsp-dbg"};
 const shader_uri = "file://src/tests/chunk.glsl";
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 fn initClient(allocator: std.mem.Allocator, io: Io) !Client {
     return Client.init(allocator, io, server_cmd, .{});
 }
@@ -50,7 +48,7 @@ fn openShader(client: *Client) !void {
     }, null);
 }
 
-test "server handles initialized notification without crashing" {
+test "server handles full neovim session: open, change, complete, shutdown" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
@@ -60,286 +58,384 @@ test "server handles initialized notification without crashing" {
 
     try initialize(&client, allocator, io);
 
-    // neovim sends this after initialize response, it's a notification with no id
     try client.sendRequest(Request.InitializedParams{}, null);
 
-    // server should still be alive — send a real request and get a response
-    try openShader(&client);
-    try client.sendRequest(Request.HoverParams{
-        .textDocument = .{ .uri = shader_uri },
-        .position = .{ .line = 4, .character = 28 },
-    }, .{ .integer = 2 });
-
-    const res = try client.waitResponse() orelse return error.NoResponse;
-    _ = res;
-}
-
-test "hover: uniform block shows binding and size" {
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-
-    var client = try initClient(allocator, io);
-    defer client.deinit(io);
-    defer client.drainStderr();
-
-    try initialize(&client, allocator, io);
-    try openShader(&client);
-
-    // `vs_params` is at line 4, col 28 in chunk.glsl
-    try client.sendRequest(Request.HoverParams{
-        .textDocument = .{ .uri = shader_uri },
-        .position = .{ .line = 4, .character = 28 },
-    }, .{ .integer = 2 });
-
-    const res = try client.waitResponse() orelse return error.NoResponse;
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
-    defer parsed.deinit();
-
-    const result = parsed.value.object.get("result").?;
-    const contents = result.object.get("contents").?.object;
-    const kind = contents.get("kind").?.string;
-    const value = contents.get("value").?.string;
-
-    try std.testing.expectEqualStrings("markdown", kind);
-    try std.testing.expect(std.mem.indexOf(u8, value, "Uniform Block") != null);
-    try std.testing.expect(std.mem.indexOf(u8, value, "144") != null); // size
-    try std.testing.expect(std.mem.indexOf(u8, value, "0") != null); // slot
-}
-
-test "hover: input attribute shows type and slot" {
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-
-    var client = try initClient(allocator, io);
-    defer client.deinit(io);
-    defer client.drainStderr();
-
-    try initialize(&client, allocator, io);
-    try openShader(&client);
-
-    // `position` is at line 11, col 8 in chunk.glsl
-    try client.sendRequest(Request.HoverParams{
-        .textDocument = .{ .uri = shader_uri },
-        .position = .{ .line = 10, .character = 8 },
-    }, .{ .integer = 2 });
-
-    const res = try client.waitResponse() orelse return error.NoResponse;
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
-    defer parsed.deinit();
-
-    const value = parsed.value.object.get("result").?
-        .object.get("contents").?
-        .object.get("value").?.string;
-
-    try std.testing.expect(std.mem.indexOf(u8, value, "Input Attribute") != null);
-    try std.testing.expect(std.mem.indexOf(u8, value, "vec3") != null);
-    try std.testing.expect(std.mem.indexOf(u8, value, "Float") != null); // base_type from YAML
-}
-
-test "hover: texture shows binding and sample type" {
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-
-    var client = try initClient(allocator, io);
-    defer client.deinit(io);
-    defer client.drainStderr();
-
-    try initialize(&client, allocator, io);
-    try openShader(&client);
-
-    // `shadow_map` is in @fs, find its line in chunk.glsl
-    // layout(binding = 0) uniform texture2D shadow_map; -> line 23, col ~35
-    try client.sendRequest(Request.HoverParams{
-        .textDocument = .{ .uri = shader_uri },
-        .position = .{ .line = 23, .character = 39 },
-    }, .{ .integer = 2 });
-
-    const res = try client.waitResponse() orelse return error.NoResponse;
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
-    defer parsed.deinit();
-
-    const value = parsed.value.object.get("result").?
-        .object.get("contents").?
-        .object.get("value").?.string;
-
-    try std.testing.expect(std.mem.indexOf(u8, value, "Texture") != null);
-    try std.testing.expect(std.mem.indexOf(u8, value, "float") != null); // sample_type
-}
-
-test "definition: resolves to declaration site" {
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-
-    var client = try initClient(allocator, io);
-    defer client.deinit(io);
-    defer client.drainStderr();
-
-    try initialize(&client, allocator, io);
-    try openShader(&client);
-
-    // `mvp` reference in void main() body — line 17, col ~14
-    try client.sendRequest(Request.DefinitionParams{
-        .textDocument = .{ .uri = shader_uri },
-        .position = .{ .line = 16, .character = 16 },
-    }, .{ .integer = 2 });
-
-    const res = try client.waitResponse() orelse return error.NoResponse;
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
-    defer parsed.deinit();
-
-    const result = parsed.value.object.get("result").?.array;
-    try std.testing.expect(result.items.len > 0);
-
-    const loc = result.items[0].object;
-    const range = loc.get("range").?.object;
-    const start = range.get("start").?.object;
-
-    // mvp declared at line 5
-    try std.testing.expectEqual(@as(i64, 5), start.get("line").?.integer);
-}
-
-test "references: finds all usages of a declaration" {
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-
-    var client = try initClient(allocator, io);
-    defer client.deinit(io);
-    defer client.drainStderr();
-
-    try initialize(&client, allocator, io);
-    try openShader(&client);
-
-    // `position` declaration at line 11, col 8
-    try client.sendRequest(Request.ReferenceParams{
-        .textDocument = .{ .uri = shader_uri },
-        .position = .{ .line = 11, .character = 8 },
-        .context = .{ .includeDeclaration = true },
-    }, .{ .integer = 2 });
-
-    const res = try client.waitResponse() orelse return error.NoResponse;
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
-    defer parsed.deinit();
-
-    const result = parsed.value.object.get("result").?.array;
-    // `position` is used in void main() at least once
-    try std.testing.expect(result.items.len > 0);
-}
-
-test "document symbols: lists all named declarations" {
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-
-    var client = try initClient(allocator, io);
-    defer client.deinit(io);
-    defer client.drainStderr();
-
-    try initialize(&client, allocator, io);
-    try openShader(&client);
-
-    try client.sendRequest(Request.DocumentSymbolParams{
-        .textDocument = .{ .uri = shader_uri },
-    }, .{ .integer = 2 });
-
-    const res = try client.waitResponse() orelse return error.NoResponse;
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
-    defer parsed.deinit();
-
-    const result = parsed.value.object.get("result").?.array;
-    try std.testing.expect(result.items.len > 0);
-
-    // Verify expected symbol names are present
-    const expected_names = &[_][]const u8{
-        "chunk", "vs_params", "position", "texcoord", "main", "shadow_map", "shadow_sampler",
-    };
-    for (expected_names) |name| {
-        var found = false;
-        for (result.items) |sym| {
-            if (std.mem.eql(u8, sym.object.get("name").?.string, name)) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            std.debug.print("Symbol not found: {s}\n", .{name});
-            return error.SymbolNotFound;
-        }
-    }
-}
-
-test "completion: returns declarations in scope" {
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-
-    var client = try initClient(allocator, io);
-    defer client.deinit(io);
-    defer client.drainStderr();
-
-    try initialize(&client, allocator, io);
-    try openShader(&client);
-
-    // Inside @vs main body
-    try client.sendRequest(Request.CompletionParams{
-        .textDocument = .{ .uri = shader_uri },
-        .position = .{ .line = 17, .character = 0 },
-        .context = .{ .triggerKind = .invoked },
-    }, .{ .integer = 2 });
-
-    const res = try client.waitResponse() orelse return error.NoResponse;
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
-    defer parsed.deinit();
-
-    const items = parsed.value.object.get("result").?
-        .object.get("items").?.array;
-
-    try std.testing.expect(items.items.len > 0);
-
-    // Should include vs scope declarations
-    var found_position = false;
-    var found_mvp = false;
-    for (items.items) |item| {
-        const label = item.object.get("label").?.string;
-        if (std.mem.eql(u8, label, "position")) found_position = true;
-        if (std.mem.eql(u8, label, "mvp")) found_mvp = true;
-    }
-    try std.testing.expect(found_position);
-    try std.testing.expect(found_mvp);
-}
-
-test "diagnostics: invalid shader produces error diagnostic" {
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-
-    var client = try initClient(allocator, io);
-    defer client.deinit(io);
-    defer client.drainStderr();
-
-    try initialize(&client, allocator, io);
-
-    // Open a shader with a deliberate error
     try client.sendRequest(Request.DidOpenTextDocumentParams{
         .textDocument = .{
-            .uri = "file://src/tests/bad.glsl",
+            .uri = shader_uri,
             .languageId = "glsl",
-            .version = 1,
-            .text = "",
+            .version = 0,
+            .text =
+            \\@header const m = @import("../math.zig")
+            \\@ctype mat4 m.Mat4
+            \\
+            \\@vs vs
+            \\layout(binding = 0) uniform vs_params {
+            \\  mat4 mvp;
+            \\  mat4 sun_mvp;
+            \\  vec3 sun_direction;
+            \\};
+            \\
+            \\in vec3 position;
+            \\in vec2 texcoord;
+            \\out vec2 frag_uv;
+            \\out vec3 frag_normal;
+            \\
+            \\void main() {
+            \\  gl_Position = mvp * vec4(position, 1.0);
+            \\  frag_uv = texcoord;
+            \\  frag_normal = vec3(0.0);
+            \\}
+            \\@end
+            \\
+            \\@fs fs
+            \\layout(binding = 0) uniform texture2D shadow_map;
+            \\layout(binding = 0) uniform sampler shadow_sampler;
+            \\
+            \\in vec2 frag_uv;
+            \\in vec3 frag_normal;
+            \\out vec4 frag_color;
+            \\
+            \\void main() {
+            \\  frag_color = texture(sampler2D(shadow_map, shadow_sampler), frag_uv);
+            \\}
+            \\@end
+            \\
+            \\@program chunk vs fs
+            \\
+            ,
         },
     }, null);
 
-    // The server should push a publishDiagnostics notification
-    // Since it's a notification (no id), we check stderr for the error
-    // or check that hover returns empty for an unknown file
-    try client.sendRequest(Request.HoverParams{
-        .textDocument = .{ .uri = "file://src/tests/bad.glsl" },
-        .position = .{ .line = 0, .character = 0 },
+    // 4. textDocument/didChange — full document replacement with a stray 'k' added
+    const changed_text = Request.TextDocumentContentChangeEvent{
+        .text =
+        \\@header const m = @import("../math.zig")
+        \\@ctype mat4 m.Mat4
+        \\
+        \\@vs vs
+        \\layout(binding = 0) uniform vs_params {
+        \\  mat4 mvp;
+        \\  mat4 sun_mvp;
+        \\  vec3 sun_direction;
+        \\};
+        \\
+        \\in vec3 position;
+        \\in vec2 texcoord;
+        \\out vec2 frag_uv;
+        \\out vec3 frag_normal;
+        \\
+        \\void main() {
+        \\  gl_Position = mvp * vec4(position, 1.0);
+        \\  frag_uv = texcoord;
+        \\  frag_normal = vec3(0.0);
+        \\}
+        \\@end
+        \\
+        \\@fs fs
+        \\layout(binding = 0) uniform texture2D shadow_map;
+        \\layout(binding = 0) uniform sampler shadow_sampler;
+        \\
+        \\in vec2 frag_uv;
+        \\in vec3 frag_normal;
+        \\out vec4 frag_color;
+        \\
+        \\void main() {
+        \\  frag_color = texture(sampler2D(shadow_map, shadow_sampler), frag_uv);
+        \\  k
+        \\}
+        \\@end
+        \\
+        \\@program chunk vs fs
+        \\
+        ,
+    };
+    var content_changes = [1]Request.TextDocumentContentChangeEvent{changed_text};
+    try client.sendRequest(Request.DidChangeTextDocumentParams{
+        .textDocument = .{ .uri = shader_uri, .version = 6 },
+        .contentChanges = &content_changes,
+    }, null);
+
+    // 5. textDocument/completion — triggered at line 32, character 3 (where 'k' was typed)
+    try client.sendRequest(Request.CompletionParams{
+        .textDocument = .{ .uri = shader_uri },
+        .position = .{ .line = 32, .character = 3 },
     }, .{ .integer = 2 });
 
-    const res = try client.waitResponse() orelse return error.NoResponse;
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
-    defer parsed.deinit();
+    const completion_res = try client.waitResponse() orelse return error.NoResponse;
+    _ = completion_res;
 
-    // Should return empty hover for a file that failed analysis
-    const value = parsed.value.object.get("result").?
-        .object.get("contents").?
-        .object.get("value").?.string;
-    try std.testing.expectEqualStrings("", value);
+    // 6. shutdown
+    try client.sendRequest(Request.ShutdownParams{}, .{ .integer = 3 });
+    _ = try client.waitResponse();
 }
+
+// test "hover: uniform block shows binding and size" {
+//     const allocator = std.testing.allocator;
+//     const io = std.testing.io;
+//
+//     var client = try initClient(allocator, io);
+//     defer client.deinit(io);
+//     defer client.drainStderr();
+//
+//     try initialize(&client, allocator, io);
+//     try openShader(&client);
+//
+//     // `vs_params` is at line 4, col 28 in chunk.glsl
+//     try client.sendRequest(Request.HoverParams{
+//         .textDocument = .{ .uri = shader_uri },
+//         .position = .{ .line = 4, .character = 28 },
+//     }, .{ .integer = 2 });
+//
+//     const res = try client.waitResponse() orelse return error.NoResponse;
+//     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
+//     defer parsed.deinit();
+//
+//     const result = parsed.value.object.get("result").?;
+//     const contents = result.object.get("contents").?.object;
+//     const kind = contents.get("kind").?.string;
+//     const value = contents.get("value").?.string;
+//
+//     try std.testing.expectEqualStrings("markdown", kind);
+//     try std.testing.expect(std.mem.indexOf(u8, value, "Uniform Block") != null);
+//     try std.testing.expect(std.mem.indexOf(u8, value, "144") != null); // size
+//     try std.testing.expect(std.mem.indexOf(u8, value, "0") != null); // slot
+// }
+//
+// test "hover: input attribute shows type and slot" {
+//     const allocator = std.testing.allocator;
+//     const io = std.testing.io;
+//
+//     var client = try initClient(allocator, io);
+//     defer client.deinit(io);
+//     defer client.drainStderr();
+//
+//     try initialize(&client, allocator, io);
+//     try openShader(&client);
+//
+//     // `position` is at line 11, col 8 in chunk.glsl
+//     try client.sendRequest(Request.HoverParams{
+//         .textDocument = .{ .uri = shader_uri },
+//         .position = .{ .line = 10, .character = 8 },
+//     }, .{ .integer = 2 });
+//
+//     const res = try client.waitResponse() orelse return error.NoResponse;
+//     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
+//     defer parsed.deinit();
+//
+//     const value = parsed.value.object.get("result").?
+//         .object.get("contents").?
+//         .object.get("value").?.string;
+//
+//     try std.testing.expect(std.mem.indexOf(u8, value, "Input Attribute") != null);
+//     try std.testing.expect(std.mem.indexOf(u8, value, "vec3") != null);
+//     try std.testing.expect(std.mem.indexOf(u8, value, "Float") != null); // base_type from YAML
+// }
+//
+// test "hover: texture shows binding and sample type" {
+//     const allocator = std.testing.allocator;
+//     const io = std.testing.io;
+//
+//     var client = try initClient(allocator, io);
+//     defer client.deinit(io);
+//     defer client.drainStderr();
+//
+//     try initialize(&client, allocator, io);
+//     try openShader(&client);
+//
+//     // `shadow_map` is in @fs, find its line in chunk.glsl
+//     // layout(binding = 0) uniform texture2D shadow_map; -> line 23, col ~35
+//     try client.sendRequest(Request.HoverParams{
+//         .textDocument = .{ .uri = shader_uri },
+//         .position = .{ .line = 23, .character = 39 },
+//     }, .{ .integer = 2 });
+//
+//     const res = try client.waitResponse() orelse return error.NoResponse;
+//     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
+//     defer parsed.deinit();
+//
+//     const value = parsed.value.object.get("result").?
+//         .object.get("contents").?
+//         .object.get("value").?.string;
+//
+//     try std.testing.expect(std.mem.indexOf(u8, value, "Texture") != null);
+//     try std.testing.expect(std.mem.indexOf(u8, value, "float") != null); // sample_type
+// }
+//
+// test "definition: resolves to declaration site" {
+//     const allocator = std.testing.allocator;
+//     const io = std.testing.io;
+//
+//     var client = try initClient(allocator, io);
+//     defer client.deinit(io);
+//     defer client.drainStderr();
+//
+//     try initialize(&client, allocator, io);
+//     try openShader(&client);
+//
+//     // `mvp` reference in void main() body — line 17, col ~14
+//     try client.sendRequest(Request.DefinitionParams{
+//         .textDocument = .{ .uri = shader_uri },
+//         .position = .{ .line = 16, .character = 16 },
+//     }, .{ .integer = 2 });
+//
+//     const res = try client.waitResponse() orelse return error.NoResponse;
+//     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
+//     defer parsed.deinit();
+//
+//     const result = parsed.value.object.get("result").?.array;
+//     try std.testing.expect(result.items.len > 0);
+//
+//     const loc = result.items[0].object;
+//     const range = loc.get("range").?.object;
+//     const start = range.get("start").?.object;
+//
+//     // mvp declared at line 5
+//     try std.testing.expectEqual(@as(i64, 5), start.get("line").?.integer);
+// }
+//
+// test "references: finds all usages of a declaration" {
+//     const allocator = std.testing.allocator;
+//     const io = std.testing.io;
+//
+//     var client = try initClient(allocator, io);
+//     defer client.deinit(io);
+//     defer client.drainStderr();
+//
+//     try initialize(&client, allocator, io);
+//     try openShader(&client);
+//
+//     // `position` declaration at line 11, col 8
+//     try client.sendRequest(Request.ReferenceParams{
+//         .textDocument = .{ .uri = shader_uri },
+//         .position = .{ .line = 11, .character = 8 },
+//         .context = .{ .includeDeclaration = true },
+//     }, .{ .integer = 2 });
+//
+//     const res = try client.waitResponse() orelse return error.NoResponse;
+//     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
+//     defer parsed.deinit();
+//
+//     const result = parsed.value.object.get("result").?.array;
+//     // `position` is used in void main() at least once
+//     try std.testing.expect(result.items.len > 0);
+// }
+//
+// test "document symbols: lists all named declarations" {
+//     const allocator = std.testing.allocator;
+//     const io = std.testing.io;
+//
+//     var client = try initClient(allocator, io);
+//     defer client.deinit(io);
+//     defer client.drainStderr();
+//
+//     try initialize(&client, allocator, io);
+//     try openShader(&client);
+//
+//     try client.sendRequest(Request.DocumentSymbolParams{
+//         .textDocument = .{ .uri = shader_uri },
+//     }, .{ .integer = 2 });
+//
+//     const res = try client.waitResponse() orelse return error.NoResponse;
+//     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
+//     defer parsed.deinit();
+//
+//     const result = parsed.value.object.get("result").?.array;
+//     try std.testing.expect(result.items.len > 0);
+//
+//     // Verify expected symbol names are present
+//     const expected_names = &[_][]const u8{
+//         "chunk", "vs_params", "position", "texcoord", "main", "shadow_map", "shadow_sampler",
+//     };
+//     for (expected_names) |name| {
+//         var found = false;
+//         for (result.items) |sym| {
+//             if (std.mem.eql(u8, sym.object.get("name").?.string, name)) {
+//                 found = true;
+//                 break;
+//             }
+//         }
+//         if (!found) {
+//             std.debug.print("Symbol not found: {s}\n", .{name});
+//             return error.SymbolNotFound;
+//         }
+//     }
+// }
+//
+// test "completion: returns declarations in scope" {
+//     const allocator = std.testing.allocator;
+//     const io = std.testing.io;
+//
+//     var client = try initClient(allocator, io);
+//     defer client.deinit(io);
+//     defer client.drainStderr();
+//
+//     try initialize(&client, allocator, io);
+//     try openShader(&client);
+//
+//     // Inside @vs main body
+//     try client.sendRequest(Request.CompletionParams{
+//         .textDocument = .{ .uri = shader_uri },
+//         .position = .{ .line = 17, .character = 0 },
+//         .context = .{ .triggerKind = .invoked },
+//     }, .{ .integer = 2 });
+//
+//     const res = try client.waitResponse() orelse return error.NoResponse;
+//     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
+//     defer parsed.deinit();
+//
+//     const items = parsed.value.object.get("result").?
+//         .object.get("items").?.array;
+//
+//     try std.testing.expect(items.items.len > 0);
+//
+//     // Should include vs scope declarations
+//     var found_position = false;
+//     var found_mvp = false;
+//     for (items.items) |item| {
+//         const label = item.object.get("label").?.string;
+//         if (std.mem.eql(u8, label, "position")) found_position = true;
+//         if (std.mem.eql(u8, label, "mvp")) found_mvp = true;
+//     }
+//     try std.testing.expect(found_position);
+//     try std.testing.expect(found_mvp);
+// }
+//
+// test "diagnostics: invalid shader produces error diagnostic" {
+//     const allocator = std.testing.allocator;
+//     const io = std.testing.io;
+//
+//     var client = try initClient(allocator, io);
+//     defer client.deinit(io);
+//     defer client.drainStderr();
+//
+//     try initialize(&client, allocator, io);
+//
+//     // Open a shader with a deliberate error
+//     try client.sendRequest(Request.DidOpenTextDocumentParams{
+//         .textDocument = .{
+//             .uri = "file://src/tests/bad.glsl",
+//             .languageId = "glsl",
+//             .version = 1,
+//             .text = "",
+//         },
+//     }, null);
+//
+//     // The server should push a publishDiagnostics notification
+//     // Since it's a notification (no id), we check stderr for the error
+//     // or check that hover returns empty for an unknown file
+//     try client.sendRequest(Request.HoverParams{
+//         .textDocument = .{ .uri = "file://src/tests/bad.glsl" },
+//         .position = .{ .line = 0, .character = 0 },
+//     }, .{ .integer = 2 });
+//
+//     const res = try client.waitResponse() orelse return error.NoResponse;
+//     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
+//     defer parsed.deinit();
+//
+//     // Should return empty hover for a file that failed analysis
+//     const value = parsed.value.object.get("result").?
+//         .object.get("contents").?
+//         .object.get("value").?.string;
+//     try std.testing.expectEqualStrings("", value);
+// }

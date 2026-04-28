@@ -113,6 +113,7 @@ pub fn stringify(v: anytype, id: ?Id, writer: *std.Io.Writer) Error!void {
 
 pub const Params = union(enum) {
     initialized: json.Parsed(InitializedParams),
+    shutdown: json.Parsed(ShutdownParams),
     initialize: json.Parsed(InitializeParams),
     completion: json.Parsed(CompletionParams),
     semantic_tokens_full: json.Parsed(SemanticTokensFull),
@@ -138,8 +139,6 @@ pub const Params = union(enum) {
     execute_command: json.Parsed(ExecuteCommandParams),
     show_message: json.Parsed(ShowMessageRequestParams),
 
-    shutdown,
-
     pub fn deinit(self: @This()) void {
         switch (self) {
             .shutdown => {},
@@ -152,6 +151,10 @@ pub const param_types = @typeInfo(Params).@"union".fields;
 
 pub const InitializedParams = struct {
     pub const method = "initialized";
+};
+
+pub const ShutdownParams = struct {
+    pub const method = "shutdown";
 };
 
 pub const TextDocumentIdentifier = struct {
@@ -389,7 +392,7 @@ pub const DidSaveTextDocumentParams = struct {
     pub const method = "textDocument/didSave";
 
     textDocument: TextDocumentIdentifier,
-    text: ?[]const u8,
+    text: ?[]const u8 = null,
 };
 
 pub const TextDocumentContentChangeEvent = struct {
