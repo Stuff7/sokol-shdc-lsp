@@ -10,8 +10,9 @@ const Range = common.Range;
 const Position = common.Position;
 const Diagnostic = common.Diagnostic;
 const WorkspaceFolder = common.WorkspaceFolder;
+const Id = common.Id;
 
-id: ?i64,
+id: ?Id,
 params: Params,
 
 pub fn parse(allocator: Allocator, data: []const u8) Error!@This() {
@@ -26,7 +27,11 @@ pub fn parse(allocator: Allocator, data: []const u8) Error!@This() {
     if (!std.mem.eql(u8, jsonrpc.string, "2.0")) return error.UnsupportedJsonRpcVersion;
 
     return .{
-        .id = if (jv.value.object.get("id")) |n| n.integer else null,
+        .id = if (jv.value.object.get("id")) |n| switch (n) {
+            .integer => |v| .{ .integer = v },
+            .string => |v| .{ .string = v },
+            else => return error.UnexpectedLspRequest,
+        } else null,
         .params = try getParams(allocator, jv.value),
     };
 }
@@ -68,23 +73,29 @@ fn getParams(allocator: Allocator, jv: json.Value) Error!Params {
     const method = if (jv.object.get("method")) |m| m.string else return error.MissingLspRequestMethod;
 
     inline for (param_types) |f| {
+        if (f.type == void) {
+            if (std.mem.eql(u8, f.name, method)) {
+                return @unionInit(Params, f.name, {});
+            }
+            continue;
+        }
         const ParamsType = @FieldType(@FieldType(Params, f.name), "value");
         if (std.mem.eql(u8, @field(ParamsType, "method"), method)) {
-            const params_value = jv.object.get("params") orelse return error.MissingLspRequestParams;
+            const params_value = jv.object.get("params") orelse json.Value{ .null = {} };
             const parsed = try json.parseFromValue(ParamsType, allocator, params_value, .{ .ignore_unknown_fields = true });
             params = @unionInit(Params, f.name, parsed);
             return params;
         }
     }
 
-    return error.MissingLspRequestParams;
+    return error.MethodNotFound;
 }
 
-pub fn stringify(v: anytype, id: ?i64, writer: *std.Io.Writer) Error!void {
+pub fn stringify(v: anytype, id: ?Id, writer: *std.Io.Writer) Error!void {
     const T = @TypeOf(v);
     if (id) |actual_id| {
         const req: struct {
-            id: i64,
+            id: Id,
             jsonrpc: []const u8 = "2.0",
             method: []const u8 = T.method,
             params: T,
@@ -101,6 +112,7 @@ pub fn stringify(v: anytype, id: ?i64, writer: *std.Io.Writer) Error!void {
 }
 
 pub const Params = union(enum) {
+    initialized: json.Parsed(InitializedParams),
     initialize: json.Parsed(InitializeParams),
     completion: json.Parsed(CompletionParams),
     semantic_tokens_full: json.Parsed(SemanticTokensFull),
@@ -126,17 +138,21 @@ pub const Params = union(enum) {
     execute_command: json.Parsed(ExecuteCommandParams),
     show_message: json.Parsed(ShowMessageRequestParams),
 
-    shutdown: json.Parsed(ShutdownParams),
-    exit: json.Parsed(ExitParams),
+    shutdown,
 
     pub fn deinit(self: @This()) void {
         switch (self) {
+            .shutdown => {},
             inline else => |t| t.deinit(),
         }
     }
 };
 
 pub const param_types = @typeInfo(Params).@"union".fields;
+
+pub const InitializedParams = struct {
+    pub const method = "initialized";
+};
 
 pub const TextDocumentIdentifier = struct {
     uri: []const u8 = "",
@@ -169,7 +185,7 @@ pub const GeneralCapabilities = struct {
         parser: ?[]const u8 = null,
         version: ?[]const u8 = null,
     } = null,
-    positionEncodings: ?[]const []const u8 = null, // usually ["utf-16"]
+    positionEncodings: ?[]const []const u8 = null,
 };
 
 pub const WorkspaceCapabilities = struct {
@@ -202,7 +218,7 @@ pub const TextDocumentCapabilities = struct {
     } = null,
 
     hover: ?struct {
-        contentFormat: ?[]const []const u8 = null, // e.g. ["markdown", "plaintext"]
+        contentFormat: ?[]const []const u8 = null,
     } = null,
 
     signatureHelp: ?struct {
@@ -238,8 +254,8 @@ pub const TextDocumentCapabilities = struct {
 pub const InitializeParams = struct {
     pub const method = "initialize";
 
-    processId: ?u32 = null, // Client PID
-    rootUri: ?[]const u8 = null, // Workspace root URI
+    processId: ?u32 = null,
+    rootUri: ?[]const u8 = null,
     initializationOptions: ?json.Value = null,
     capabilities: ClientCapabilities = .{},
     trace: ?Trace = null,
@@ -289,7 +305,7 @@ pub const DocumentOnTypeFormattingParams = struct {
 
     textDocument: TextDocumentIdentifier = .{},
     position: Position = .{},
-    ch: u8 = 0, // the character typed
+    ch: u8 = 0,
     options: struct { tabSize: u64, insertSpaces: bool } = .{ .tabSize = 4, .insertSpaces = true },
 };
 
@@ -324,10 +340,21 @@ pub const HoverParams = struct {
     position: Position = .{},
 };
 
+pub const TextDocumentSaveReason = enum(u2) {
+    manual = 1,
+    after_delay,
+    focus_out,
+
+    pub fn jsonStringify(self: @This(), s: *json.Stringify) !void {
+        try s.write(@intFromEnum(self));
+    }
+};
+
 pub const WillSaveParams = struct {
     pub const method = "textDocument/willSaveWaitUntil";
 
     textDocument: TextDocumentIdentifier = .{},
+    reason: TextDocumentSaveReason = .manual,
 };
 
 pub const FormattingParams = struct {
@@ -343,14 +370,6 @@ pub const RenameParams = struct {
     textDocument: TextDocumentIdentifier = .{},
     position: Position = .{},
     newName: []const u8,
-};
-
-pub const ShutdownParams = struct {
-    pub const method = "shutdown";
-};
-
-pub const ExitParams = struct {
-    pub const method = "exit";
 };
 
 pub const TextDocumentItem = struct {

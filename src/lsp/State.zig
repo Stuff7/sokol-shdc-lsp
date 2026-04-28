@@ -1,11 +1,12 @@
 const std = @import("std");
 const response = @import("response.zig");
 const common = @import("common.zig");
+const json = std.json;
+
 const ShdcRunner = @import("../parser/ShdcRunner.zig");
 const FileAnalysis = @import("../parser/FileAnalysis.zig");
-
-const Error = common.Error;
 const Request = @import("Request.zig");
+const Error = common.Error;
 const Allocator = std.mem.Allocator;
 const Range = common.Range;
 const Position = common.Position;
@@ -382,7 +383,7 @@ pub fn createInitResponse(self: *Self, allocator: Allocator, req: Request) Error
                 .textDocumentSync = .full,
                 .hoverProvider = caps.textDocument != null and caps.textDocument.?.hover != null,
                 .completionProvider = if (caps.textDocument != null and caps.textDocument.?.completion != null)
-                    .{ .resolveProvider = true, .triggerCharacters = ".>" }
+                    .{ .resolveProvider = true, .triggerCharacters = &.{ ".", ">" } }
                 else
                     null,
                 .definitionProvider = caps.textDocument != null and caps.textDocument.?.definition != null,
@@ -394,7 +395,7 @@ pub fn createInitResponse(self: *Self, allocator: Allocator, req: Request) Error
         },
     };
 
-    return resp.stringify(allocator);
+    return json.Stringify.valueAlloc(allocator, resp, .{});
 }
 
 pub fn handleDidOpen(self: *Self, allocator: Allocator, req: Request) Error!void {
@@ -436,7 +437,7 @@ pub fn createHoverResponse(self: *Self, allocator: Allocator, req: Request) Erro
             .id = req.id,
             .result = .{ .contents = .{ .kind = .plaintext, .value = "" } },
         };
-        return resp.stringify(allocator);
+        return json.Stringify.valueAlloc(allocator, resp, .{});
     };
 
     const decl = declAtPos(analysis, pos) orelse {
@@ -444,7 +445,7 @@ pub fn createHoverResponse(self: *Self, allocator: Allocator, req: Request) Erro
             .id = req.id,
             .result = .{ .contents = .{ .kind = .plaintext, .value = "" } },
         };
-        return resp.stringify(allocator);
+        return json.Stringify.valueAlloc(allocator, resp, .{});
     };
 
     const use_markdown = self.support.has(.markdown);
@@ -464,7 +465,7 @@ pub fn createHoverResponse(self: *Self, allocator: Allocator, req: Request) Erro
             .range = faRangeToLsp(decl.range),
         },
     };
-    return resp.stringify(allocator);
+    return json.Stringify.valueAlloc(allocator, resp, .{});
 }
 
 pub fn createDefinitionResponse(self: *Self, allocator: Allocator, req: Request) Error![]const u8 {
@@ -475,8 +476,8 @@ pub fn createDefinitionResponse(self: *Self, allocator: Allocator, req: Request)
 
     const empty = response.Definition{ .id = req.id, .result = &.{} };
 
-    const analysis = self.getAnalysis(uri) orelse return empty.stringify(allocator);
-    const decl = declAtPos(analysis, pos) orelse return empty.stringify(allocator);
+    const analysis = self.getAnalysis(uri) orelse return json.Stringify.valueAlloc(allocator, empty, .{});
+    const decl = declAtPos(analysis, pos) orelse return json.Stringify.valueAlloc(allocator, empty, .{});
 
     const decl_uri = if (std.mem.eql(u8, decl.range.file, uriToPath(uri)))
         uri
@@ -491,7 +492,7 @@ pub fn createDefinitionResponse(self: *Self, allocator: Allocator, req: Request)
             .range = faRangeToLsp(decl.range),
         }},
     };
-    return resp.stringify(allocator);
+    return json.Stringify.valueAlloc(allocator, resp, .{});
 }
 
 pub fn createReferencesResponse(self: *Self, allocator: Allocator, req: Request) Error![]const u8 {
@@ -502,8 +503,8 @@ pub fn createReferencesResponse(self: *Self, allocator: Allocator, req: Request)
 
     const empty = response.References{ .id = req.id, .result = &.{} };
 
-    const analysis = self.getAnalysis(uri) orelse return empty.stringify(allocator);
-    const target_decl = declAtPos(analysis, pos) orelse return empty.stringify(allocator);
+    const analysis = self.getAnalysis(uri) orelse return json.Stringify.valueAlloc(allocator, empty, .{});
+    const target_decl = declAtPos(analysis, pos) orelse return json.Stringify.valueAlloc(allocator, empty, .{});
 
     var locs = std.ArrayList(response.Location).empty;
     defer locs.deinit(allocator);
@@ -520,7 +521,7 @@ pub fn createReferencesResponse(self: *Self, allocator: Allocator, req: Request)
     }
 
     const resp = response.References{ .id = req.id, .result = locs.items };
-    return resp.stringify(allocator);
+    return json.Stringify.valueAlloc(allocator, resp, .{});
 }
 
 pub fn createDocumentSymbolResponse(self: *Self, allocator: Allocator, req: Request) Error![]const u8 {
@@ -529,7 +530,7 @@ pub fn createDocumentSymbolResponse(self: *Self, allocator: Allocator, req: Requ
     const uri = params.textDocument.uri;
 
     const empty = response.DocumentSymbol{ .id = req.id, .result = &.{} };
-    const analysis = self.getAnalysis(uri) orelse return empty.stringify(allocator);
+    const analysis = self.getAnalysis(uri) orelse return json.Stringify.valueAlloc(allocator, empty, .{});
 
     var symbols = std.ArrayList(response.SymbolInformation).empty;
     defer symbols.deinit(allocator);
@@ -561,7 +562,7 @@ pub fn createDocumentSymbolResponse(self: *Self, allocator: Allocator, req: Requ
     }
 
     const resp = response.DocumentSymbol{ .id = req.id, .result = symbols.items };
-    return resp.stringify(allocator);
+    return json.Stringify.valueAlloc(allocator, resp, .{});
 }
 
 pub fn createCompletionResponse(self: *Self, allocator: Allocator, req: Request) Error![]const u8 {
@@ -571,7 +572,7 @@ pub fn createCompletionResponse(self: *Self, allocator: Allocator, req: Request)
     const pos = params.position;
 
     const empty = response.Completion{ .id = req.id, .result = .{ .items = &.{} } };
-    const analysis = self.getAnalysis(uri) orelse return empty.stringify(allocator);
+    const analysis = self.getAnalysis(uri) orelse return json.Stringify.valueAlloc(allocator, empty, .{});
 
     // Find which scope the cursor is in
     var active_scope: ?*FileAnalysis.Scope = null;
@@ -592,6 +593,7 @@ pub fn createCompletionResponse(self: *Self, allocator: Allocator, req: Request)
             if (decl.name.len == 0) continue;
             if (decl.kind == .uniform_block) continue; // block name not directly usable
 
+            // TODO keep these allocated
             const detail = try declDetail(allocator, decl.*);
             defer allocator.free(detail);
 
@@ -612,7 +614,7 @@ pub fn createCompletionResponse(self: *Self, allocator: Allocator, req: Request)
     }
 
     const resp = response.Completion{ .id = req.id, .result = .{ .items = items.items } };
-    return resp.stringify(allocator);
+    return json.Stringify.valueAlloc(allocator, resp, .{});
 }
 
 pub fn createDiagnosticsNotification(self: *Self, allocator: Allocator, uri: []const u8) Error!?[]const u8 {

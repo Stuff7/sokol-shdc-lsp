@@ -2,6 +2,7 @@ const std = @import("std");
 
 const StdoutPoller = @import("../StdoutPoller.zig");
 const Request = @import("Request.zig");
+const common = @import("common.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
@@ -61,7 +62,7 @@ pub fn deinit(self: *@This(), io: Io) void {
     self.child.kill(io);
 }
 
-pub fn sendRequest(self: *@This(), req: anytype, id: ?i64) !void {
+pub fn sendRequest(self: *@This(), req: anytype, id: ?common.Id) !void {
     try Request.stringify(req, id, &self.req_sink.writer);
     defer self.req_sink.clearRetainingCapacity();
     const request = self.req_sink.written();

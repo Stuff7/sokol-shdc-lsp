@@ -34,7 +34,7 @@ fn initialize(client: *Client, allocator: std.mem.Allocator, io: Io) !void {
                 .references = .{ .dynamicRegistration = true },
             },
         },
-    }, 1);
+    }, .{ .integer = 1 });
     _ = try client.waitResponse();
     _ = io;
 }
@@ -48,6 +48,30 @@ fn openShader(client: *Client) !void {
             .text = "",
         },
     }, null);
+}
+
+test "server handles initialized notification without crashing" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var client = try initClient(allocator, io);
+    defer client.deinit(io);
+    defer client.drainStderr();
+
+    try initialize(&client, allocator, io);
+
+    // neovim sends this after initialize response, it's a notification with no id
+    try client.sendRequest(Request.InitializedParams{}, null);
+
+    // server should still be alive — send a real request and get a response
+    try openShader(&client);
+    try client.sendRequest(Request.HoverParams{
+        .textDocument = .{ .uri = shader_uri },
+        .position = .{ .line = 4, .character = 28 },
+    }, .{ .integer = 2 });
+
+    const res = try client.waitResponse() orelse return error.NoResponse;
+    _ = res;
 }
 
 test "hover: uniform block shows binding and size" {
@@ -65,7 +89,7 @@ test "hover: uniform block shows binding and size" {
     try client.sendRequest(Request.HoverParams{
         .textDocument = .{ .uri = shader_uri },
         .position = .{ .line = 4, .character = 28 },
-    }, 2);
+    }, .{ .integer = 2 });
 
     const res = try client.waitResponse() orelse return error.NoResponse;
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
@@ -97,7 +121,7 @@ test "hover: input attribute shows type and slot" {
     try client.sendRequest(Request.HoverParams{
         .textDocument = .{ .uri = shader_uri },
         .position = .{ .line = 10, .character = 8 },
-    }, 2);
+    }, .{ .integer = 2 });
 
     const res = try client.waitResponse() orelse return error.NoResponse;
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
@@ -128,7 +152,7 @@ test "hover: texture shows binding and sample type" {
     try client.sendRequest(Request.HoverParams{
         .textDocument = .{ .uri = shader_uri },
         .position = .{ .line = 23, .character = 39 },
-    }, 2);
+    }, .{ .integer = 2 });
 
     const res = try client.waitResponse() orelse return error.NoResponse;
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
@@ -157,7 +181,7 @@ test "definition: resolves to declaration site" {
     try client.sendRequest(Request.DefinitionParams{
         .textDocument = .{ .uri = shader_uri },
         .position = .{ .line = 16, .character = 16 },
-    }, 2);
+    }, .{ .integer = 2 });
 
     const res = try client.waitResponse() orelse return error.NoResponse;
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
@@ -190,7 +214,7 @@ test "references: finds all usages of a declaration" {
         .textDocument = .{ .uri = shader_uri },
         .position = .{ .line = 11, .character = 8 },
         .context = .{ .includeDeclaration = true },
-    }, 2);
+    }, .{ .integer = 2 });
 
     const res = try client.waitResponse() orelse return error.NoResponse;
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
@@ -214,7 +238,7 @@ test "document symbols: lists all named declarations" {
 
     try client.sendRequest(Request.DocumentSymbolParams{
         .textDocument = .{ .uri = shader_uri },
-    }, 2);
+    }, .{ .integer = 2 });
 
     const res = try client.waitResponse() orelse return error.NoResponse;
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
@@ -258,7 +282,7 @@ test "completion: returns declarations in scope" {
         .textDocument = .{ .uri = shader_uri },
         .position = .{ .line = 17, .character = 0 },
         .context = .{ .triggerKind = .invoked },
-    }, 2);
+    }, .{ .integer = 2 });
 
     const res = try client.waitResponse() orelse return error.NoResponse;
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});
@@ -307,7 +331,7 @@ test "diagnostics: invalid shader produces error diagnostic" {
     try client.sendRequest(Request.HoverParams{
         .textDocument = .{ .uri = "file://src/tests/bad.glsl" },
         .position = .{ .line = 0, .character = 0 },
-    }, 2);
+    }, .{ .integer = 2 });
 
     const res = try client.waitResponse() orelse return error.NoResponse;
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, res, .{});

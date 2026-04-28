@@ -1,12 +1,25 @@
 const std = @import("std");
 const json = std.json;
 
+pub const Id = union(enum) {
+    integer: i64,
+    string: []const u8,
+
+    pub fn jsonStringify(self: @This(), s: *json.Stringify) !void {
+        switch (self) {
+            .integer => |v| try s.write(v),
+            .string => |v| try s.write(v),
+        }
+    }
+};
+
 pub const Error = error{
     UnexpectedLspRequest,
     MissingJsonRpcVersion,
     UnsupportedJsonRpcVersion,
     MissingLspRequestMethod,
     MissingLspRequestParams,
+    MethodNotFound,
 
     // Errors from json.parseFromSlice, need to be explicit for zls to see it
     BufferUnderrun,
