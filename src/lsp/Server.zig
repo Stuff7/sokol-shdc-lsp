@@ -4,7 +4,7 @@ const response = @import("response.zig");
 const log = std.log;
 const json = std.json;
 
-const State = @import("State.zig");
+const Session = @import("Session.zig");
 const Request = @import("Request.zig");
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
@@ -12,11 +12,11 @@ const Allocator = std.mem.Allocator;
 allocator: Allocator,
 buffer: ArrayList(u8) = ArrayList(u8).empty,
 stdout: ?*std.Io.Writer = undefined,
-state: State,
+state: Session,
 running: bool = false,
 
 pub fn init(allocator: Allocator, io: std.Io) !@This() {
-    var state = State.init(allocator, io);
+    var state = Session.init(allocator, io);
     try state.initBuiltins(allocator);
     return .{ .allocator = allocator, .state = state };
 }

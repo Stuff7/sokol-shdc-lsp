@@ -70,6 +70,15 @@ pub const Initialize = struct {
     };
 };
 
+pub const DiagnosticsNotification = struct {
+    jsonrpc: []const u8 = "2.0",
+    method: []const u8 = "textDocument/publishDiagnostics",
+    params: struct {
+        uri: []const u8,
+        diagnostics: []const common.Diagnostic,
+    },
+};
+
 pub const SignatureHelp = struct {
     jsonrpc: []const u8 = "2.0",
     id: ?Id,

@@ -1,4 +1,7 @@
 const std = @import("std");
+const common = @import("../lsp/common.zig");
+
+const Position = common.Position;
 
 arena: std.heap.ArenaAllocator,
 file: []const u8,
@@ -233,3 +236,45 @@ pub const Scope = struct {
     declarations: []Declaration,
     references: []Reference,
 };
+
+pub fn faRangeToLsp(r: Range) common.Range {
+    return .{
+        .start = .{ .line = r.start.line, .character = r.start.col },
+        .end = .{ .line = r.end.line, .character = r.end.col },
+    };
+}
+
+pub fn lspPosInFaRange(pos: Position, r: Range) bool {
+    const after_start = pos.line > r.start.line or
+        (pos.line == r.start.line and pos.character >= r.start.col);
+    const before_end = pos.line < r.end.line or
+        (pos.line == r.end.line and pos.character <= r.end.col);
+    return after_start and before_end;
+}
+
+pub fn findDeclAtPos(analysis: *@This(), pos: Position) ?*const @This().Declaration {
+    for (analysis.scopes) |*scope| {
+        for (scope.declarations) |*decl| {
+            if (lspPosInFaRange(pos, decl.range)) return decl;
+        }
+    }
+    for (analysis.top_level) |*decl| {
+        if (lspPosInFaRange(pos, decl.range)) return decl;
+    }
+    return null;
+}
+
+/// Finds the reference at a given position and returns its resolved declaration.
+pub fn findRefAtPos(analysis: *@This(), pos: Position) ?*const @This().Declaration {
+    for (analysis.scopes) |*scope| {
+        for (scope.references) |*ref| {
+            if (lspPosInFaRange(pos, ref.range)) return ref.decl;
+        }
+    }
+    return null;
+}
+
+/// Returns the declaration or resolved decl under the cursor.
+pub fn declAtPos(analysis: *@This(), pos: Position) ?*const @This().Declaration {
+    return findDeclAtPos(analysis, pos) orelse findRefAtPos(analysis, pos);
+}

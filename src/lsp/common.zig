@@ -1,6 +1,10 @@
 const std = @import("std");
 const json = std.json;
 
+pub fn stringify(allocator: std.mem.Allocator, value: anytype) ![]const u8 {
+    return json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
+}
+
 pub const Id = union(enum) {
     integer: i64,
     string: []const u8,
@@ -37,6 +41,18 @@ pub const Error = error{
     UnknownField,
     ValueTooLong,
     WriteFailed,
+};
+
+pub const BuiltinParam = struct {
+    type: []const u8,
+    name: []const u8,
+};
+
+pub const BuiltinFunction = struct {
+    return_type: []const u8,
+    name: []const u8,
+    parameters: []BuiltinParam,
+    description: ?[][]const u8 = null,
 };
 
 pub const Position = struct {
@@ -163,3 +179,32 @@ pub const CompletionItemKind = enum(u5) {
         try s.write(@intFromEnum(self));
     }
 };
+
+pub fn uriToPath(uri: []const u8) []const u8 {
+    const prefix = "file://";
+    if (std.mem.startsWith(u8, uri, prefix)) return uri[prefix.len..];
+    return uri;
+}
+
+pub fn pathToUri(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "file://{s}", .{path});
+}
+
+pub fn posToOffset(source: []const u8, pos: Position) usize {
+    var offset: usize = 0;
+    var line: u32 = 0;
+    while (offset < source.len) {
+        if (line == pos.line) return offset + @min(pos.character, source.len - offset);
+        if (source[offset] == '\n') line += 1;
+        offset += 1;
+    }
+    return offset;
+}
+
+pub fn wordAt(source: []const u8, offset: usize) []const u8 {
+    var start = offset;
+    var end = offset;
+    while (end < source.len and (std.ascii.isAlphanumeric(source[end]) or source[end] == '_')) end += 1;
+    while (start > 0 and (std.ascii.isAlphanumeric(source[start - 1]) or source[start - 1] == '_')) start -= 1;
+    return source[start..end];
+}

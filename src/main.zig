@@ -4,8 +4,6 @@ const lsp = @import("lsp.zig");
 const zut = @import("zut");
 const log = std.log;
 
-const ZigBuildParser = @import("ZigBuildParser.zig");
-
 pub fn main(init: std.process.Init) void {
     const allocator = init.gpa;
 
