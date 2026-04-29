@@ -121,6 +121,7 @@ pub const Params = union(enum) {
     will_save: json.Parsed(WillSaveParams),
     formatting: json.Parsed(FormattingParams),
     rename: json.Parsed(RenameParams),
+    signature_help: json.Parsed(SignatureHelpParams),
 
     definition: json.Parsed(DefinitionParams),
     references: json.Parsed(ReferenceParams),
@@ -155,6 +156,13 @@ pub const InitializedParams = struct {
 
 pub const ShutdownParams = struct {
     pub const method = "shutdown";
+};
+
+pub const SignatureHelpParams = struct {
+    pub const method = "textDocument/signatureHelp";
+
+    textDocument: TextDocumentIdentifier = .{},
+    position: Position = .{},
 };
 
 pub const TextDocumentIdentifier = struct {

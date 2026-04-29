@@ -6,40 +6,30 @@ const log = std.log;
 
 const ZigBuildParser = @import("ZigBuildParser.zig");
 
-// pub fn main(init: std.process.Init) void {
-//     const allocator = init.gpa;
-//     var buf: [256]u8 = undefined;
-//     const cwd = std.Io.Dir.cwd();
-//     const workdir = buf[0 .. cwd.realPath(init.io, &buf) catch return log.info("Could not get working directory path", .{})];
-//
-//     var parser = ZigBuildParser.create(allocator, init.io, init.environ_map, workdir) catch |err|
-//         return log.info("Could not initialize zig parser: {}", .{err});
-//     defer parser.destroy(init.io);
-//
-//     parser.setStateChangeCallback(onDiagnostics, null);
-//     parser.run(init.io) catch return log.info("Could not start zig build parser", .{});
-//
-//     var stdin_buf: [256]u8 = undefined;
-//     var stdin = std.Io.File.stdin().reader(init.io, &stdin_buf);
-//     while (parser.running) {
-//         std.debug.print("> ", .{});
-//         const cmd = stdin.interface.takeDelimiterExclusive('\n') catch |err| {
-//             log.info("Command is too long ({})", .{err});
-//             continue;
-//         };
-//         if (std.ascii.eqlIgnoreCase(cmd, "q")) parser.running = false;
-//     }
-// }
-
 pub fn main(init: std.process.Init) void {
     const allocator = init.gpa;
 
-    var server = lsp.Server{ .allocator = allocator, .state = .init(allocator, init.io) };
-    server.run(init.io) catch |err| log.err("Encountered error while running server: {}\n", .{err});
-}
+    var log_buf: [512]u8 = undefined;
+    const cwd = std.Io.Dir.cwd();
 
-fn onDiagnostics(state: *const ZigBuildParser.State, _: ?*anyopaque) void {
-    zut.dbg.dump(state.diagnostics);
+    var args = init.minimal.args.iterate();
+    defer args.deinit();
+    _ = args.skip();
+    const log_path = args.next() orelse "lsp.log";
+
+    if (cwd.createFile(init.io, log_path, .{ .truncate = true })) |f| {
+        log_file = f;
+    } else |e| std.debug.print("Failed to create log file: {}", .{e});
+
+    defer log_file.close(init.io);
+
+    var w = log_file.writer(init.io, &log_buf);
+    log_writer = &w.interface;
+
+    var server = lsp.Server.init(allocator, init.io) catch |err|
+        return log.err("Encountered error while initializing server: {}\n", .{err});
+
+    server.run(init.io) catch |err| log.err("Encountered error while running server: {}\n", .{err});
 }
 
 pub const std_options: std.Options = .{
@@ -49,15 +39,20 @@ pub const std_options: std.Options = .{
         .{ .scope = .tokenizer, .level = .warn },
         .{ .scope = .parser, .level = .warn },
     },
-    .logFn = myLogFn,
+    .logFn = logFn,
 };
 
-pub fn myLogFn(
-    comptime level: log.Level,
+var log_file = std.Io.File.stderr();
+var log_writer: *std.Io.Writer = undefined;
+
+pub fn logFn(
+    comptime level: std.log.Level,
     comptime scope: @EnumLiteral(),
     comptime format: []const u8,
     args: anytype,
 ) void {
+    defer log_writer.flush() catch {};
+
     const prefix = switch (scope) {
         log.default_log_scope => "",
         else => " [" ++ @tagName(scope) ++ "]: ",
@@ -70,7 +65,7 @@ pub fn myLogFn(
         .debug => "38;5;245", // gray
     });
 
-    std.debug.print(f ++ "\n", args);
+    log_writer.print(f ++ "\n", args) catch {};
 }
 
 test {

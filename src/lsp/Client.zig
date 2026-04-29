@@ -53,6 +53,7 @@ pub fn init(allocator: Allocator, io: Io, server_cmd: []const []const u8, opts: 
 
 pub fn deinit(self: *@This(), io: Io) void {
     defer self.allocator.destroy(self.child);
+    _ = self.child.wait(io) catch {};
     self.req_sink.deinit();
     self.res_sink.deinit();
     self.res_poller.destroy(self.allocator);

@@ -37,6 +37,11 @@ pub const Initialize = struct {
         completionProvider: ?CompletionProvider = null,
         semanticTokensProvider: ?SemanticTokensProvider = null,
         renameProvider: bool = true,
+        signatureHelpProvider: ?SignatureHelpProvider = null,
+
+        pub const SignatureHelpProvider = struct {
+            triggerCharacters: []const []const u8 = &.{ "(", "," },
+        };
 
         pub const SemanticTokensProvider = struct {
             legend: Legend,
@@ -62,6 +67,29 @@ pub const Initialize = struct {
             resolveProvider: bool = true,
             triggerCharacters: []const []const u8 = &.{"."},
         };
+    };
+};
+
+pub const SignatureHelp = struct {
+    jsonrpc: []const u8 = "2.0",
+    id: ?Id,
+    result: ?Result,
+
+    pub const Result = struct {
+        signatures: []const SignatureInformation,
+        activeSignature: u32 = 0,
+        activeParameter: u32 = 0,
+    };
+
+    pub const SignatureInformation = struct {
+        label: []const u8,
+        documentation: ?[]const u8 = null,
+        parameters: []const ParameterInformation,
+    };
+
+    pub const ParameterInformation = struct {
+        label: []const u8,
+        documentation: ?[]const u8 = null,
     };
 };
 

@@ -13,6 +13,13 @@ allocator: Allocator,
 buffer: ArrayList(u8) = ArrayList(u8).empty,
 stdout: ?*std.Io.Writer = undefined,
 state: State,
+running: bool = false,
+
+pub fn init(allocator: Allocator, io: std.Io) !@This() {
+    var state = State.init(allocator, io);
+    try state.initBuiltins(allocator);
+    return .{ .allocator = allocator, .state = state };
+}
 
 pub fn deinit(self: *@This()) void {
     self.buffer.deinit(self.allocator);
@@ -36,7 +43,7 @@ fn handleMessage(self: *@This(), message: []const u8) !void {
     };
     defer req.deinit();
 
-    const res_bytes = switch (req.params) {
+    const res_bytes = bytes: switch (req.params) {
         .initialize => try self.state.createInitResponse(self.allocator, req),
         .completion => try self.state.createCompletionResponse(self.allocator, req),
         .hover => try self.state.createHoverResponse(self.allocator, req),
@@ -74,9 +81,13 @@ fn handleMessage(self: *@This(), message: []const u8) !void {
             self.state.handleDidClose(self.allocator, req);
             return;
         },
+        .signature_help => try self.state.createSignatureHelpResponse(self.allocator, req),
         .semantic_tokens_full => try self.state.createSemanticTokensResponse(self.allocator, req),
         .rename => try self.state.createRenameResponse(self.allocator, req),
-        .shutdown => try json.Stringify.valueAlloc(self.allocator, response.NullResult{ .id = req.id }, .{}),
+        .shutdown => {
+            self.running = false;
+            break :bytes try json.Stringify.valueAlloc(self.allocator, response.NullResult{ .id = req.id }, .{});
+        },
         else => {
             log.debug("SKIP: {s}", .{message});
             return;
@@ -96,7 +107,8 @@ pub fn run(self: *@This(), io: std.Io) !void {
     const stdin = &stdin_reader.interface;
     self.stdout = &stdout_reader.interface;
 
-    while (true) {
+    self.running = true;
+    while (self.running) {
         const header = std.mem.trim(u8, try stdin.takeDelimiterInclusive('\n'), " \r\n");
         if (header.len == 0) continue;
 

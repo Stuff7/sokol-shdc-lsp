@@ -12,6 +12,160 @@ const Range = common.Range;
 const Position = common.Position;
 const CompletionItemKind = common.CompletionItemKind;
 
+support: Support = .{},
+workspace: []const u8 = "",
+files: std.StringHashMap(FileEntry),
+io: std.Io,
+runner_config: ShdcRunner.Config = .{},
+builtins: std.StringHashMap([]BuiltinFunction),
+builtin_types: std.StringHashMap([]const u8),
+
+const Self = @This();
+
+pub const BuiltinParam = struct {
+    type: []const u8,
+    name: []const u8,
+};
+
+pub const BuiltinFunction = struct {
+    return_type: []const u8,
+    name: []const u8,
+    parameters: []BuiltinParam,
+    description: ?[][]const u8 = null,
+};
+
+pub fn init(allocator: Allocator, io: std.Io) Self {
+    return .{
+        .files = .init(allocator),
+        .builtins = .init(allocator),
+        .builtin_types = .init(allocator),
+        .io = io,
+    };
+}
+
+pub fn deinit(self: *Self, allocator: Allocator) void {
+    var bit = self.builtins.iterator();
+    while (bit.next()) |entry| {
+        for (entry.value_ptr.*) |f| {
+            for (f.parameters) |p| {
+                allocator.free(p.type);
+                allocator.free(p.name);
+            }
+            if (f.description) |desc| {
+                for (desc) |s| allocator.free(s);
+                allocator.free(desc);
+            }
+            allocator.free(f.parameters);
+            allocator.free(f.return_type);
+        }
+        allocator.free(entry.value_ptr.*);
+        allocator.free(entry.key_ptr.*);
+    }
+    self.builtins.deinit(allocator);
+}
+
+pub fn initBuiltins(self: *Self, allocator: Allocator) !void {
+    const data = @embedFile("../spec.json");
+
+    const Root = struct {
+        functions: []BuiltinFunction,
+    };
+
+    const parsed = try std.json.parseFromSlice(Root, allocator, data, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    // Group by name — all strings duped into allocator since parsed will be freed
+    for (parsed.value.functions) |f| {
+        const entry = try self.builtins.getOrPut(f.name);
+        if (!entry.found_existing) {
+            entry.key_ptr.* = try allocator.dupe(u8, f.name);
+            entry.value_ptr.* = &.{};
+        }
+        const old = entry.value_ptr.*;
+        const new = try allocator.realloc(old, old.len + 1);
+        // dupe all strings since parsed arena is freed after this function
+        var params = try allocator.alloc(BuiltinParam, f.parameters.len);
+        for (f.parameters, 0..) |p, i| {
+            params[i] = .{
+                .type = try allocator.dupe(u8, p.type),
+                .name = try allocator.dupe(u8, p.name),
+            };
+        }
+        new[old.len] = .{
+            .return_type = try allocator.dupe(u8, f.return_type),
+            .name = entry.key_ptr.*,
+            .parameters = params,
+            .description = if (f.description) |desc| blk: {
+                var duped = try allocator.alloc([]const u8, desc.len);
+                for (desc, 0..) |s, i| duped[i] = try allocator.dupe(u8, s);
+                break :blk duped;
+            } else null,
+        };
+        entry.value_ptr.* = new;
+    }
+
+    const Types = struct { types: []struct { name: []const u8, description: ?[][]const u8 = null } };
+    const parsed_types = try std.json.parseFromSlice(Types, allocator, data, .{ .ignore_unknown_fields = true });
+    defer parsed_types.deinit();
+    for (parsed_types.value.types) |t| {
+        const desc = if (t.description) |d| try std.mem.join(allocator, "\n\n", d) else try allocator.dupe(u8, "");
+        try self.builtin_types.put(try allocator.dupe(u8, t.name), desc);
+    }
+}
+
+fn analyzeFile(self: *Self, allocator: Allocator, uri: []const u8) !void {
+    const path = uriToPath(uri);
+
+    // Remove old entry if present
+    if (self.files.fetchRemove(path)) |entry| {
+        var old = entry.value;
+        old.analysis.deinit();
+        allocator.free(entry.key);
+        allocator.free(old.uri);
+    }
+
+    const analysis = try ShdcRunner.run(self.io, allocator, path, self.runner_config);
+    const key = try allocator.dupe(u8, path);
+    const uri_owned = try allocator.dupe(u8, uri);
+    try self.files.put(key, .{ .analysis = analysis, .uri = uri_owned });
+}
+
+fn getAnalysis(self: *Self, uri: []const u8) ?*FileAnalysis {
+    const path = uriToPath(uri);
+    const entry = self.files.getPtr(path) orelse return null;
+    return &entry.analysis;
+}
+
+/// Finds the declaration at a given position across all scopes.
+fn findDeclAtPos(analysis: *FileAnalysis, pos: Position) ?*const FileAnalysis.Declaration {
+    for (analysis.scopes) |*scope| {
+        for (scope.declarations) |*decl| {
+            if (lspPosInFaRange(pos, decl.range)) return decl;
+        }
+    }
+    for (analysis.top_level) |*decl| {
+        if (lspPosInFaRange(pos, decl.range)) return decl;
+    }
+    return null;
+}
+
+/// Finds the reference at a given position and returns its resolved declaration.
+fn findRefAtPos(analysis: *FileAnalysis, pos: Position) ?*const FileAnalysis.Declaration {
+    for (analysis.scopes) |*scope| {
+        for (scope.references) |*ref| {
+            if (lspPosInFaRange(pos, ref.range)) return ref.decl;
+        }
+    }
+    return null;
+}
+
+/// Returns the declaration or resolved decl under the cursor.
+fn declAtPos(analysis: *FileAnalysis, pos: Position) ?*const FileAnalysis.Declaration {
+    return findDeclAtPos(analysis, pos) orelse findRefAtPos(analysis, pos);
+}
+
 // ── URI helpers ───────────────────────────────────────────────────────────────
 
 fn uriToPath(uri: []const u8) []const u8 {
@@ -258,85 +412,6 @@ const FileEntry = struct {
     uri: []const u8,
 };
 
-// ── State ─────────────────────────────────────────────────────────────────────
-
-support: Support = .{},
-workspace: []const u8 = "",
-files: std.StringHashMap(FileEntry),
-io: std.Io,
-runner_config: ShdcRunner.Config = .{},
-
-const Self = @This();
-
-pub fn init(allocator: Allocator, io: std.Io) Self {
-    return .{
-        .files = std.StringHashMap(FileEntry).init(allocator),
-        .io = io,
-    };
-}
-
-pub fn deinit(self: *Self, allocator: Allocator) void {
-    allocator.free(self.workspace);
-    var it = self.files.iterator();
-    while (it.next()) |entry| {
-        entry.value_ptr.analysis.deinit();
-        allocator.free(entry.key_ptr.*);
-        allocator.free(entry.value_ptr.uri);
-    }
-    self.files.deinit(allocator);
-}
-
-fn analyzeFile(self: *Self, allocator: Allocator, uri: []const u8) !void {
-    const path = uriToPath(uri);
-
-    // Remove old entry if present
-    if (self.files.fetchRemove(path)) |entry| {
-        var old = entry.value;
-        old.analysis.deinit();
-        allocator.free(entry.key);
-        allocator.free(old.uri);
-    }
-
-    const analysis = try ShdcRunner.run(self.io, allocator, path, self.runner_config);
-    const key = try allocator.dupe(u8, path);
-    const uri_owned = try allocator.dupe(u8, uri);
-    try self.files.put(key, .{ .analysis = analysis, .uri = uri_owned });
-}
-
-fn getAnalysis(self: *Self, uri: []const u8) ?*FileAnalysis {
-    const path = uriToPath(uri);
-    const entry = self.files.getPtr(path) orelse return null;
-    return &entry.analysis;
-}
-
-/// Finds the declaration at a given position across all scopes.
-fn findDeclAtPos(analysis: *FileAnalysis, pos: Position) ?*const FileAnalysis.Declaration {
-    for (analysis.scopes) |*scope| {
-        for (scope.declarations) |*decl| {
-            if (lspPosInFaRange(pos, decl.range)) return decl;
-        }
-    }
-    for (analysis.top_level) |*decl| {
-        if (lspPosInFaRange(pos, decl.range)) return decl;
-    }
-    return null;
-}
-
-/// Finds the reference at a given position and returns its resolved declaration.
-fn findRefAtPos(analysis: *FileAnalysis, pos: Position) ?*const FileAnalysis.Declaration {
-    for (analysis.scopes) |*scope| {
-        for (scope.references) |*ref| {
-            if (lspPosInFaRange(pos, ref.range)) return ref.decl;
-        }
-    }
-    return null;
-}
-
-/// Returns the declaration or resolved decl under the cursor.
-fn declAtPos(analysis: *FileAnalysis, pos: Position) ?*const FileAnalysis.Declaration {
-    return findDeclAtPos(analysis, pos) orelse findRefAtPos(analysis, pos);
-}
-
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 pub fn createInitResponse(self: *Self, allocator: Allocator, req: Request) Error![]const u8 {
@@ -391,6 +466,7 @@ pub fn createInitResponse(self: *Self, allocator: Allocator, req: Request) Error
                 .workspaceSymbolProvider = true,
                 .documentFormattingProvider = caps.textDocument != null and caps.textDocument.?.documentFormatting != null,
                 .documentRangeFormattingProvider = caps.textDocument != null and caps.textDocument.?.documentFormatting != null,
+                .signatureHelpProvider = .{},
                 .semanticTokensProvider = .{
                     .legend = .{
                         .tokenTypes = &.{
@@ -438,7 +514,7 @@ pub fn createInitResponse(self: *Self, allocator: Allocator, req: Request) Error
         },
     };
 
-    return json.Stringify.valueAlloc(allocator, resp, .{});
+    return json.Stringify.valueAlloc(allocator, resp, .{ .emit_null_optional_fields = false });
 }
 
 pub fn handleDidOpen(self: *Self, allocator: Allocator, req: Request) Error!void {
@@ -487,19 +563,70 @@ pub fn createHoverResponse(self: *Self, allocator: Allocator, req: Request) Erro
     const uri = params.textDocument.uri;
 
     const analysis = self.getAnalysis(uri) orelse {
-        const resp = response.Hover{
-            .id = req.id,
-            .result = .{ .contents = .{ .kind = .plaintext, .value = "" } },
-        };
-        return json.Stringify.valueAlloc(allocator, resp, .{});
+        return json.Stringify.valueAlloc(allocator, response.NullResult{ .id = req.id }, .{});
     };
 
     const decl = declAtPos(analysis, pos) orelse {
-        const resp = response.Hover{
-            .id = req.id,
-            .result = .{ .contents = .{ .kind = .plaintext, .value = "" } },
-        };
-        return json.Stringify.valueAlloc(allocator, resp, .{});
+        // check builtins — get word under cursor
+        const source = analysis.source;
+        var offset: usize = 0;
+        var line: u32 = 0;
+        while (offset < source.len) {
+            if (line == pos.line) {
+                offset += @min(pos.character, source.len - offset);
+                break;
+            }
+            if (source[offset] == '\n') line += 1;
+            offset += 1;
+        }
+        var word_end = offset;
+        while (word_end < source.len and (std.ascii.isAlphanumeric(source[word_end]) or source[word_end] == '_')) {
+            word_end += 1;
+        }
+        var word_start = offset;
+        while (word_start > 0 and (std.ascii.isAlphanumeric(source[word_start - 1]) or source[word_start - 1] == '_')) {
+            word_start -= 1;
+        }
+        if (word_start < word_end) {
+            const word = source[word_start..word_end];
+            if (self.builtins.get(word)) |overloads| {
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+                const arena_alloc = arena.allocator();
+                var buf = std.Io.Writer.Allocating.init(arena_alloc);
+                defer buf.deinit();
+                for (overloads) |f| {
+                    try buf.writer.print("```glsl\n{s} {s}(", .{ f.return_type, f.name });
+                    for (f.parameters, 0..) |p, i| {
+                        if (i > 0) try buf.writer.writeAll(", ");
+                        try buf.writer.print("{s} {s}", .{ p.type, p.name });
+                    }
+                    try buf.writer.writeAll(")\n```");
+                    if (f.description) |desc| {
+                        for (desc) |l| {
+                            try buf.writer.print("\n\n{s}", .{l});
+                        }
+                    }
+                    try buf.writer.writeAll("\n\n");
+                }
+                const content = try allocator.dupe(u8, std.mem.trimEnd(u8, buf.written(), "\n"));
+                defer allocator.free(content);
+                const resp = response.Hover{
+                    .id = req.id,
+                    .result = .{ .contents = .{ .kind = .markdown, .value = content } },
+                };
+                return json.Stringify.valueAlloc(allocator, resp, .{ .emit_null_optional_fields = false });
+            } else if (self.builtin_types.get(word)) |desc| {
+                const content = try std.fmt.allocPrint(allocator, "```glsl\n{s}\n```\n\n{s}", .{ word, desc });
+                defer allocator.free(content);
+                const resp = response.Hover{
+                    .id = req.id,
+                    .result = .{ .contents = .{ .kind = .markdown, .value = content } },
+                };
+                return json.Stringify.valueAlloc(allocator, resp, .{ .emit_null_optional_fields = false });
+            }
+        }
+        return json.Stringify.valueAlloc(allocator, response.NullResult{ .id = req.id }, .{});
     };
 
     const use_markdown = self.support.has(.markdown);
@@ -519,7 +646,7 @@ pub fn createHoverResponse(self: *Self, allocator: Allocator, req: Request) Erro
             .range = faRangeToLsp(decl.range),
         },
     };
-    return json.Stringify.valueAlloc(allocator, resp, .{});
+    return json.Stringify.valueAlloc(allocator, resp, .{ .emit_null_optional_fields = false });
 }
 
 pub fn createDefinitionResponse(self: *Self, allocator: Allocator, req: Request) Error![]const u8 {
@@ -664,6 +791,27 @@ pub fn createCompletionResponse(self: *Self, allocator: Allocator, req: Request)
                 .insertTextFormat = if (supports_snippets and decl.kind == .function) .snippet else .text,
             });
         }
+    }
+
+    // Add builtin functions
+    var builtin_it = self.builtins.iterator();
+    while (builtin_it.next()) |entry| {
+        const overloads = entry.value_ptr.*;
+        if (overloads.len == 0) continue;
+        // Use first overload for detail/insert, they all share the same name
+        const f = overloads[0];
+        const detail = try std.fmt.allocPrint(arena_alloc, "{s} {s}(...)", .{ f.return_type, f.name });
+        const insert_text = if (supports_snippets)
+            try std.fmt.allocPrint(arena_alloc, "{s}($1)", .{f.name})
+        else
+            try arena_alloc.dupe(u8, f.name);
+        try items.append(arena_alloc, .{
+            .label = f.name,
+            .kind = .function,
+            .detail = detail,
+            .insertText = insert_text,
+            .insertTextFormat = if (supports_snippets) .snippet else .text,
+        });
     }
 
     const resp = response.Completion{ .id = req.id, .result = .{ .items = items.items } };
@@ -869,6 +1017,181 @@ pub fn createSemanticTokensResponse(self: *Self, allocator: Allocator, req: Requ
 
     const resp = response.SemanticTokensFull{ .id = req.id, .result = .{ .data = data.items } };
     return json.Stringify.valueAlloc(allocator, resp, .{});
+}
+
+pub fn createSignatureHelpResponse(self: *Self, allocator: Allocator, req: Request) Error![]const u8 {
+    std.debug.assert(req.params == .signature_help);
+    const params = req.params.signature_help.value;
+    const pos = params.position;
+    const uri = params.textDocument.uri;
+
+    const empty_result = response.SignatureHelp{ .id = req.id, .result = .{ .signatures = &.{} } };
+    const analysis = self.getAnalysis(uri) orelse return json.Stringify.valueAlloc(allocator, empty_result, .{ .emit_null_optional_fields = false });
+
+    // Find the active scope
+    var active_scope: ?*FileAnalysis.Scope = null;
+    for (analysis.scopes) |*scope| {
+        if (lspPosInFaRange(pos, scope.range)) {
+            active_scope = scope;
+            break;
+        }
+    }
+    const scope = active_scope orelse return json.Stringify.valueAlloc(allocator, empty_result, .{ .emit_null_optional_fields = false });
+
+    // Walk backwards from cursor to find the opening '(' and function name
+    const source = analysis.source;
+    // Convert LSP position to byte offset
+    var offset: usize = 0;
+    var line: u32 = 0;
+    while (offset < source.len) {
+        if (line == pos.line) {
+            offset += pos.character;
+            break;
+        }
+        if (source[offset] == '\n') line += 1;
+        offset += 1;
+    }
+    if (offset > source.len) return json.Stringify.valueAlloc(allocator, empty_result, .{ .emit_null_optional_fields = false });
+
+    // Scan backwards to find '(' and count active parameter
+    var active_param: u32 = 0;
+    var depth: u32 = 0;
+    var paren_offset: ?usize = null;
+    var i: usize = offset;
+    while (i > 0) {
+        i -= 1;
+        switch (source[i]) {
+            ')' => depth += 1,
+            '(' => {
+                if (depth == 0) {
+                    paren_offset = i;
+                    break;
+                }
+                depth -= 1;
+            },
+            ',' => if (depth == 0) {
+                active_param += 1;
+            },
+            '\n' => break, // don't scan past line boundary
+            else => {},
+        }
+    }
+
+    const paren = paren_offset orelse return json.Stringify.valueAlloc(allocator, empty_result, .{ .emit_null_optional_fields = false });
+
+    // Extract function name before '('
+    var name_end = paren;
+    while (name_end > 0 and source[name_end - 1] == ' ') name_end -= 1;
+    var name_start = name_end;
+    while (name_start > 0 and (std.ascii.isAlphanumeric(source[name_start - 1]) or source[name_start - 1] == '_')) {
+        name_start -= 1;
+    }
+    if (name_start == name_end) return json.Stringify.valueAlloc(allocator, empty_result, .{ .emit_null_optional_fields = false });
+    const func_name = source[name_start..name_end];
+
+    // Find the declaration
+    var found_decl: ?*FileAnalysis.Declaration = null;
+
+    for (scope.declarations) |*d| {
+        if (d.kind == .function and std.mem.eql(u8, d.name, func_name)) {
+            found_decl = d;
+            break;
+        }
+    }
+
+    if (found_decl == null) {
+        // fall back to builtins
+        if (self.builtins.get(func_name)) |overloads| {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            errdefer arena.deinit();
+            const arena_alloc = arena.allocator();
+
+            var sigs = std.ArrayList(response.SignatureHelp.SignatureInformation).empty;
+
+            var best_active_param: u32 = active_param;
+            for (overloads) |f| {
+                if (f.parameters.len == 0 and active_param == 0 or
+                    active_param < f.parameters.len)
+                {
+                    var label_buf = std.Io.Writer.Allocating.init(arena_alloc);
+                    try label_buf.writer.print("{s} {s}(", .{ f.return_type, f.name });
+                    var param_infos = std.ArrayList(response.SignatureHelp.ParameterInformation).empty;
+                    for (f.parameters, 0..) |p, idx| {
+                        if (idx > 0) try label_buf.writer.writeAll(", ");
+                        const param_label = try std.fmt.allocPrint(arena_alloc, "{s} {s}", .{ p.type, p.name });
+                        try label_buf.writer.writeAll(param_label);
+                        try param_infos.append(arena_alloc, .{ .label = param_label });
+                    }
+                    try label_buf.writer.writeAll(")");
+                    try sigs.append(arena_alloc, .{
+                        .label = label_buf.written(),
+                        .parameters = param_infos.items,
+                    });
+                    best_active_param = active_param;
+                }
+            }
+
+            if (sigs.items.len == 0) {
+                arena.deinit();
+                return json.Stringify.valueAlloc(allocator, empty_result, .{ .emit_null_optional_fields = false });
+            }
+
+            const result = response.SignatureHelp.Result{
+                .signatures = sigs.items,
+                .activeSignature = 0,
+                .activeParameter = best_active_param,
+            };
+            const resp = response.SignatureHelp{ .id = req.id, .result = result };
+            const bytes = try json.Stringify.valueAlloc(allocator, resp, .{ .emit_null_optional_fields = false });
+            arena.deinit();
+            return bytes;
+        }
+        return json.Stringify.valueAlloc(allocator, empty_result, .{ .emit_null_optional_fields = false });
+    }
+    const decl = found_decl.?;
+    for (scope.declarations) |*d| {
+        if (d.kind == .function and std.mem.eql(u8, d.name, func_name)) {
+            found_decl = d;
+            break;
+        }
+    }
+    const func = decl.kind.function;
+
+    // Only show if active_param is within range
+    if (active_param >= func.params.len and func.params.len > 0) {
+        return json.Stringify.valueAlloc(allocator, empty_result, .{});
+    }
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    // Build label: "return_type name(type param, ...)"
+    var label_buf = std.Io.Writer.Allocating.init(arena_alloc);
+    defer label_buf.deinit();
+    try label_buf.writer.print("{s} {s}(", .{ func.return_type.name, func_name });
+    var param_infos = std.ArrayList(response.SignatureHelp.ParameterInformation).empty;
+    defer param_infos.deinit(arena_alloc);
+    for (func.params, 0..) |p, idx| {
+        if (idx > 0) try label_buf.writer.writeAll(", ");
+        const param_label = try std.fmt.allocPrint(arena_alloc, "{s} {s}", .{ p.glsl_type.name, p.name });
+        try label_buf.writer.writeAll(param_label);
+        try param_infos.append(arena_alloc, .{ .label = param_label });
+    }
+    try label_buf.writer.writeAll(")");
+
+    const sig = response.SignatureHelp.SignatureInformation{
+        .label = label_buf.written(),
+        .parameters = param_infos.items,
+    };
+
+    const result = response.SignatureHelp.Result{
+        .signatures = &.{sig},
+        .activeSignature = 0,
+        .activeParameter = active_param,
+    };
+    const resp = response.SignatureHelp{ .id = req.id, .result = result };
+    return json.Stringify.valueAlloc(allocator, resp, .{ .emit_null_optional_fields = false });
 }
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
