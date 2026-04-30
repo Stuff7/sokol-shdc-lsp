@@ -149,6 +149,7 @@ pub fn declKindLabel(kind: FileAnalysis.DeclKind) []const u8 {
         .storage_buffer => "Storage Buffer",
         .storage_image => "Storage Image",
         .function => "Function",
+        .function_param => "Function Parameter",
         .local_var => "Local Variable",
         .@"struct" => "Struct",
         .header => "Header",

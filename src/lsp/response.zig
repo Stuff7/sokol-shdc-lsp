@@ -70,6 +70,12 @@ pub const Initialize = struct {
     };
 };
 
+pub const CompletionResolve = struct {
+    jsonrpc: []const u8 = "2.0",
+    id: ?Id,
+    result: common.CompletionItem,
+};
+
 pub const DiagnosticsNotification = struct {
     jsonrpc: []const u8 = "2.0",
     method: []const u8 = "textDocument/publishDiagnostics",

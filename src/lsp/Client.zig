@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log;
 
 const StdoutPoller = @import("../StdoutPoller.zig");
 const Request = @import("Request.zig");
@@ -53,7 +54,14 @@ pub fn init(allocator: Allocator, io: Io, server_cmd: []const []const u8, opts: 
 
 pub fn deinit(self: *@This(), io: Io) void {
     defer self.allocator.destroy(self.child);
-    _ = self.child.wait(io) catch {};
+
+    self.sendRequest(Request.ShutdownParams{}, .{ .integer = 3 }) catch |err|
+        return log.err("Client failed to send shutdown request: {}", .{err});
+    _ = self.waitResponse() catch |err|
+        return log.err("Client failed to receive shutdown response: {}", .{err});
+    _ = self.child.wait(io) catch |err|
+        return log.err("Client failed to wait for server process to end: {}", .{err});
+
     self.req_sink.deinit();
     self.res_sink.deinit();
     self.res_poller.destroy(self.allocator);
@@ -70,6 +78,23 @@ pub fn sendRequest(self: *@This(), req: anytype, id: ?common.Id) !void {
     try self.stdin.print("Content-Length: {d}\r\n\r\n", .{request.len});
     try self.stdin.writeAll(request);
     try self.stdin.flush();
+}
+
+pub fn waitNotification(self: *@This()) !?[]const u8 {
+    self.res_sink.clearRetainingCapacity();
+
+    const header: Request.Header = while (true) {
+        if (try Request.Header.parse(self.res_sink.written())) |h| break h;
+        const chunk = self.res_poller.next() orelse return null; // timeout = no notification
+        try self.res_sink.writer.writeAll(chunk);
+    };
+
+    while (!header.hasBody(self.res_sink.written())) {
+        const chunk = self.res_poller.next() orelse return error.UnexpectedEof;
+        try self.res_sink.writer.writeAll(chunk);
+    }
+
+    return header.body(self.res_sink.written());
 }
 
 pub fn waitResponse(self: *@This()) !?[]const u8 {

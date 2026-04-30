@@ -139,6 +139,7 @@ pub const Params = union(enum) {
     workspace_symbol: json.Parsed(WorkspaceSymbolParams),
     execute_command: json.Parsed(ExecuteCommandParams),
     show_message: json.Parsed(ShowMessageRequestParams),
+    completion_resolve: json.Parsed(CompletionResolveParams),
 
     pub fn deinit(self: @This()) void {
         switch (self) {
@@ -156,6 +157,16 @@ pub const InitializedParams = struct {
 
 pub const ShutdownParams = struct {
     pub const method = "shutdown";
+};
+
+pub const CompletionResolveParams = struct {
+    pub const method = "completionItem/resolve";
+    label: []const u8 = "",
+    kind: common.CompletionItemKind = .text,
+    detail: []const u8 = "",
+    documentation: ?common.MarkupContent = null,
+    insertText: []const u8 = "",
+    insertTextFormat: common.InsertTextFormat = .text,
 };
 
 pub const SignatureHelpParams = struct {

@@ -9,18 +9,13 @@ const Diagnostic = FileAnalysis.Diagnostic;
 const DiagnosticKind = FileAnalysis.DiagnosticKind;
 
 pub const Config = struct {
-    /// Path to sokol-shdc binary. Defaults to "sokol-shdc" on PATH.
     shdc_path: []const u8 = "sokol-shdc",
-    /// Target shader language.
     slang: []const u8 = "glsl430",
 };
-
-// ── Diagnostic parsing ────────────────────────────────────────────────────────
 
 /// Parses a single gcc-format diagnostic line:
 /// `file:line:col: error: message` or `file:line:col: warning: message`
 fn parseDiagnosticLine(line: []const u8, allocator: Allocator) ?Diagnostic {
-    // Find kind marker
     const error_marker = ": error: ";
     const warning_marker = ": warning: ";
     const note_marker = ": note: ";
@@ -47,7 +42,6 @@ fn parseDiagnosticLine(line: []const u8, allocator: Allocator) ?Diagnostic {
     const line_no = std.fmt.parseInt(u32, std.mem.trim(u8, line_str, " "), 10) catch return null;
     const col_no = std.fmt.parseInt(u32, std.mem.trim(u8, col_str, " "), 10) catch return null;
 
-    // Dupe strings into allocator since they're slices into a temp buffer
     const file_duped = allocator.dupe(u8, file) catch return null;
     const msg_duped = allocator.dupe(u8, message) catch return null;
 
@@ -73,8 +67,6 @@ fn parseDiagnostics(stderr: []const u8, allocator: Allocator) ![]Diagnostic {
     return diags.toOwnedSlice(allocator);
 }
 
-// ── YAML enrichment ───────────────────────────────────────────────────────────
-
 /// Finds a declaration by name and kind tag within all scopes.
 fn findDecl(decls: []FileAnalysis.Declaration, name: []const u8) ?FileAnalysis.Declaration {
     for (decls) |d| if (std.mem.eql(u8, d.name, name)) return d;
@@ -82,7 +74,6 @@ fn findDecl(decls: []FileAnalysis.Declaration, name: []const u8) ?FileAnalysis.D
 }
 
 fn enrichFromYaml(analysis: *FileAnalysis, yaml_source: []const u8) !void {
-    // zig-yaml parse into a Value tree
     const allocator = analysis.arena.allocator();
     var doc = yaml.Yaml{ .source = yaml_source };
     defer doc.deinit(allocator);
@@ -94,7 +85,6 @@ fn enrichFromYaml(analysis: *FileAnalysis, yaml_source: []const u8) !void {
     for (shaders.list) |shader| {
         const programs = shader.map.get("programs") orelse continue;
         for (programs.list) |program| {
-            // Enrich attrs
             if (program.map.get("attrs")) |attrs| {
                 for (attrs.list) |attr| {
                     const glsl_name = (attr.map.get("glsl_name") orelse continue).scalar;
@@ -111,7 +101,6 @@ fn enrichFromYaml(analysis: *FileAnalysis, yaml_source: []const u8) !void {
                 }
             }
 
-            // Enrich uniform blocks
             if (program.map.get("uniform_blocks")) |ubs| {
                 for (ubs.list) |ub| {
                     const struct_name = (ub.map.get("struct_name") orelse continue).scalar;
@@ -131,7 +120,6 @@ fn enrichFromYaml(analysis: *FileAnalysis, yaml_source: []const u8) !void {
                 }
             }
 
-            // Enrich textures (views)
             if (program.map.get("views")) |views| {
                 for (views.list) |view| {
                     const tex = view.map.get("texture") orelse continue;
@@ -155,7 +143,6 @@ fn enrichFromYaml(analysis: *FileAnalysis, yaml_source: []const u8) !void {
                 }
             }
 
-            // Enrich samplers
             if (program.map.get("samplers")) |samplers| {
                 for (samplers.list) |sampler| {
                     const name = (sampler.map.get("name") orelse continue).scalar;
@@ -178,8 +165,6 @@ fn enrichFromYaml(analysis: *FileAnalysis, yaml_source: []const u8) !void {
     }
 }
 
-// ── Runner ────────────────────────────────────────────────────────────────────
-
 pub fn run(
     io: Io,
     parent_allocator: Allocator,
@@ -188,23 +173,19 @@ pub fn run(
 ) !FileAnalysis {
     const allocator = parent_allocator;
 
-    // Read source file
     const cwd = Io.Dir.cwd();
     const source_tmp = try cwd.readFileAlloc(io, glsl_file, allocator, .limited(1024 * 1024));
-    // Parse source with our GLSL parser first
+
     var analysis = try Parser.parse(parent_allocator, glsl_file, source_tmp, config.slang);
     errdefer analysis.deinit();
     const source_owned = try analysis.arena.allocator().dupe(u8, source_tmp);
     allocator.free(source_tmp);
     analysis.source = source_owned;
 
-    // Build temp output path: /tmp/sokol_shdc_<pid>
     const pid = std.os.linux.getpid();
     const yaml_path = try std.fmt.allocPrintSentinel(allocator, "/tmp/sokol_shdc_{}.glsl_reflection.yaml", .{pid}, 0);
     const out_path = try std.fmt.allocPrintSentinel(allocator, "/tmp/sokol_shdc_{}.glsl", .{pid}, 0);
 
-    // remove the two separate defers for yaml_path and out_path frees
-    // and combine into one defer that unlinks then frees:
     defer {
         _ = std.os.linux.unlink(yaml_path);
         _ = std.os.linux.unlink(out_path);
@@ -212,7 +193,6 @@ pub fn run(
         allocator.free(out_path);
     }
 
-    // Spawn sokol-shdc
     const argv: []const []const u8 = &.{
         config.shdc_path,
         "--input",
@@ -251,7 +231,7 @@ pub fn run(
             stderr_sink.writer.writeAll(data) catch break;
             mr.reader(0).tossBuffered();
         }
-        // drain any remaining buffered data
+
         _ = mr.fillRemaining(.none) catch {};
         const remaining = mr.reader(0).buffered();
         if (remaining.len > 0) stderr_sink.writer.writeAll(remaining) catch {};
@@ -277,12 +257,10 @@ pub fn run(
         }
     }
 
-    // Attach diagnostics — dupe into arena
     const arena_alloc = analysis.arena.allocator();
     const diags = try parseDiagnostics(stderr_data, arena_alloc);
     analysis.diagnostics = diags;
 
-    // Enrich from YAML if it was generated
     const yaml_source = cwd.readFileAlloc(io, yaml_path, arena_alloc, .limited(1024 * 1024)) catch null;
     if (yaml_source) |ys| {
         enrichFromYaml(&analysis, ys) catch {};
@@ -295,7 +273,6 @@ test "ShdcRunner: valid shader enriches declarations and produces no diagnostics
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    // Write shader to a real temp file
     const tmp_path = "/tmp/shdc_test.glsl";
     const source =
         \\@vs vs
@@ -324,7 +301,6 @@ test "ShdcRunner: valid shader enriches declarations and produces no diagnostics
     ;
 
     const cwd = Io.Dir.cwd();
-    // Write source to disk
     {
         var f = try cwd.createFile(io, tmp_path, .{});
         defer f.close(io);

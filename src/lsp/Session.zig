@@ -2,6 +2,7 @@ const std = @import("std");
 const response = @import("response.zig");
 const common = @import("common.zig");
 const format = @import("format.zig");
+const helpers = @import("helpers.zig");
 const json = std.json;
 
 const ShdcRunner = @import("../parser/ShdcRunner.zig");
@@ -9,22 +10,18 @@ const FileAnalysis = @import("../parser/FileAnalysis.zig");
 const Request = @import("Request.zig");
 const Error = common.Error;
 const Allocator = std.mem.Allocator;
-const Range = common.Range;
-const Position = common.Position;
 const BuiltinFunction = common.BuiltinFunction;
 const BuiltinParam = common.BuiltinParam;
-const CompletionItemKind = common.CompletionItemKind;
 
-const stringify = common.stringify;
-const uriToPath = common.uriToPath;
-const pathToUri = common.pathToUri;
-const posToOffset = common.posToOffset;
-const wordAt = common.wordAt;
-pub const createSemanticTokensResponse = @import("semantic_tokens.zig").createSemanticTokensResponse;
+const stringify = helpers.stringify;
+const uriToPath = helpers.uriToPath;
+const pathToUri = helpers.pathToUri;
+const posToOffset = helpers.posToOffset;
+const wordAt = helpers.wordAt;
 
-support: Support = .{},
+support: helpers.Support = .{},
 workspace: []const u8 = "",
-files: std.StringHashMap(FileEntry),
+files: std.StringHashMap(helpers.FileEntry),
 io: std.Io,
 runner_config: ShdcRunner.Config = .{},
 builtins: std.StringHashMap([]BuiltinFunction),
@@ -69,7 +66,7 @@ pub fn initBuiltins(self: *Self, allocator: Allocator) !void {
         functions: []BuiltinFunction,
     };
 
-    const parsed = try std.json.parseFromSlice(Root, allocator, data, .{
+    const parsed = try json.parseFromSlice(Root, allocator, data, .{
         .ignore_unknown_fields = true,
     });
     defer parsed.deinit();
@@ -103,109 +100,11 @@ pub fn initBuiltins(self: *Self, allocator: Allocator) !void {
     }
 
     const Types = struct { types: []struct { name: []const u8, description: ?[][]const u8 = null } };
-    const parsed_types = try std.json.parseFromSlice(Types, allocator, data, .{ .ignore_unknown_fields = true });
+    const parsed_types = try json.parseFromSlice(Types, allocator, data, .{ .ignore_unknown_fields = true });
     defer parsed_types.deinit();
     for (parsed_types.value.types) |t| {
         const desc = if (t.description) |d| try std.mem.join(allocator, "\n\n", d) else try allocator.dupe(u8, "");
         try self.builtin_types.put(try allocator.dupe(u8, t.name), desc);
-    }
-}
-
-fn analyzeFile(self: *Self, allocator: Allocator, uri: []const u8) !void {
-    const path = uriToPath(uri);
-
-    if (self.files.fetchRemove(path)) |entry| {
-        var old = entry.value;
-        old.analysis.deinit();
-        allocator.free(entry.key);
-        allocator.free(old.uri);
-    }
-
-    const analysis = try ShdcRunner.run(self.io, allocator, path, self.runner_config);
-    const key = try allocator.dupe(u8, path);
-    const uri_owned = try allocator.dupe(u8, uri);
-    try self.files.put(key, .{ .analysis = analysis, .uri = uri_owned });
-}
-
-pub fn getAnalysis(self: *Self, uri: []const u8) ?*FileAnalysis {
-    const path = uriToPath(uri);
-    const entry = self.files.getPtr(path) orelse return null;
-    return &entry.analysis;
-}
-
-// ── URI helpers ───────────────────────────────────────────────────────────────
-
-// ── Capability tracking ───────────────────────────────────────────────────────
-
-const Support = struct {
-    bitset: std.bit_set.IntegerBitSet(@typeInfo(Feature).@"enum".fields.len) = .initEmpty(),
-
-    fn has(self: @This(), feat: Feature) bool {
-        return self.bitset.isSet(@intFromEnum(feat));
-    }
-
-    fn set(self: *@This(), feat: Feature, enabled: bool) void {
-        if (enabled) self.enable(feat) else self.disable(feat);
-    }
-
-    fn enable(self: *@This(), feat: Feature) void {
-        self.bitset.set(@intFromEnum(feat));
-    }
-
-    fn disable(self: *@This(), feat: Feature) void {
-        self.bitset.unset(@intFromEnum(feat));
-    }
-
-    const Feature = enum {
-        markdown,
-        snippets,
-        hover,
-        completion,
-        definition,
-        references,
-        rename_prepare,
-        document_formatting,
-        range_formatting,
-        workspace_apply_edit,
-    };
-};
-
-// ── File cache ────────────────────────────────────────────────────────────────
-
-const FileEntry = struct {
-    analysis: FileAnalysis,
-    uri: []const u8,
-};
-
-// ── Handlers ──────────────────────────────────────────────────────────────────
-
-fn applyClientCapabilities(self: *Self, caps: Request.ClientCapabilities) void {
-    if (caps.textDocument) |td| {
-        if (if (td.hover) |h| h.contentFormat else null) |formats| {
-            for (formats) |fmt| {
-                if (std.mem.eql(u8, fmt, "markdown")) {
-                    self.support.enable(.markdown);
-                    break;
-                }
-            }
-        }
-        if (td.completion) |comp| {
-            self.support.enable(.completion);
-            if (if (comp.completionItem) |item| item.snippetSupport else false) |snippet| {
-                self.support.set(.snippets, snippet);
-            }
-        }
-        self.support.set(.hover, td.hover != null);
-        self.support.set(.definition, td.definition != null);
-        self.support.set(.references, td.references != null);
-        if (if (td.rename) |rename| rename.prepareSupport else null) |prep| {
-            self.support.set(.rename_prepare, prep);
-        }
-        self.support.set(.document_formatting, td.documentFormatting != null);
-        self.support.set(.range_formatting, td.documentFormatting != null);
-    }
-    if (caps.workspace) |ws| {
-        self.support.set(.workspace_apply_edit, ws.applyEdit == true);
     }
 }
 
@@ -214,7 +113,7 @@ pub fn createInitResponse(self: *Self, allocator: Allocator, req: Request) Error
     const params = req.params.initialize.value;
 
     self.workspace = if (params.rootUri) |uri| try allocator.dupe(u8, uri) else "";
-    self.applyClientCapabilities(params.capabilities);
+    self.support.applyClientCapabilities(params.capabilities);
 
     const td = params.capabilities.textDocument;
     const resp = response.Initialize{
@@ -257,72 +156,6 @@ pub fn createInitResponse(self: *Self, allocator: Allocator, req: Request) Error
     return stringify(allocator, resp);
 }
 
-pub fn handleDidOpen(self: *Self, allocator: Allocator, req: Request) Error!void {
-    std.debug.assert(req.params == .did_open);
-    const uri = req.params.did_open.value.textDocument.uri;
-    self.analyzeFile(allocator, uri) catch |err| {
-        std.log.err("Failed to analyze {s}: {}", .{ uri, err });
-    };
-}
-
-pub fn handleDidChange(self: *Self, allocator: Allocator, req: Request) Error!void {
-    std.debug.assert(req.params == .did_change);
-    const params = req.params.did_change.value;
-    const uri = params.textDocument.uri;
-    if (params.contentChanges.len == 0) return;
-    const content = params.contentChanges[params.contentChanges.len - 1].text;
-    self.analyzeBuffer(allocator, uri, content) catch |err| {
-        std.log.err("Failed to analyze buffer {s}: {}", .{ uri, err });
-    };
-}
-
-pub fn handleDidSave(self: *Self, allocator: Allocator, req: Request) Error!void {
-    std.debug.assert(req.params == .did_save);
-    const uri = req.params.did_save.value.textDocument.uri;
-    self.analyzeFile(allocator, uri) catch |err| {
-        std.log.err("Failed to analyze {s}: {}", .{ uri, err });
-    };
-}
-
-pub fn handleDidClose(self: *Self, allocator: Allocator, req: Request) void {
-    std.debug.assert(req.params == .did_close);
-    const uri = req.params.did_close.value.textDocument.uri;
-    const path = uriToPath(uri);
-    if (self.files.fetchRemove(path)) |entry| {
-        var old = entry.value;
-        old.analysis.deinit();
-        allocator.free(entry.key);
-        allocator.free(old.uri);
-    }
-}
-
-fn hoverBuiltin(self: *Self, allocator: Allocator, id: ?common.Id, word: []const u8) !?[]const u8 {
-    if (self.builtins.get(word)) |overloads| {
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-        var buf = std.Io.Writer.Allocating.init(arena.allocator());
-        for (overloads) |f| {
-            try buf.writer.print("```glsl\n{s} {s}(", .{ f.return_type, f.name });
-            for (f.parameters, 0..) |p, i| {
-                if (i > 0) try buf.writer.writeAll(", ");
-                try buf.writer.print("{s} {s}", .{ p.type, p.name });
-            }
-            try buf.writer.writeAll(")\n```");
-            if (f.description) |desc| for (desc) |l| try buf.writer.print("\n\n{s}", .{l});
-            try buf.writer.writeAll("\n\n");
-        }
-        const content = std.mem.trimEnd(u8, buf.written(), "\n");
-        const resp = response.Hover{ .id = id, .result = .{ .contents = .{ .kind = .markdown, .value = content } } };
-        return try stringify(allocator, resp);
-    }
-    if (self.builtin_types.get(word)) |desc| {
-        const content = try std.fmt.allocPrint(allocator, "```glsl\n{s}\n```\n\n{s}", .{ word, desc });
-        const resp = response.Hover{ .id = id, .result = .{ .contents = .{ .kind = .markdown, .value = content } } };
-        return try stringify(allocator, resp);
-    }
-    return null;
-}
-
 pub fn createHoverResponse(self: *Self, allocator: Allocator, req: Request) Error![]const u8 {
     std.debug.assert(req.params == .hover);
     const params = req.params.hover.value;
@@ -330,13 +163,15 @@ pub fn createHoverResponse(self: *Self, allocator: Allocator, req: Request) Erro
     const uri = params.textDocument.uri;
 
     const null_result = response.NullResult{ .id = req.id };
-    const analysis = self.getAnalysis(uri) orelse return stringify(allocator, null_result);
+    const analysis = helpers.getAnalysis(&self.files, uri) orelse return stringify(allocator, null_result);
 
     const decl = analysis.declAtPos(pos) orelse {
         const offset = posToOffset(analysis.source, pos);
         const word = wordAt(analysis.source, offset);
         if (word.len > 0) {
-            if (try self.hoverBuiltin(allocator, req.id, word)) |bytes| return bytes;
+            if (try helpers.hoverBuiltin(allocator, &self.builtins, &self.builtin_types, req.id, word)) |bytes| {
+                return bytes;
+            }
         }
         return stringify(allocator, null_result);
     };
@@ -366,7 +201,7 @@ pub fn createDefinitionResponse(self: *Self, allocator: Allocator, req: Request)
 
     const empty = response.Definition{ .id = req.id, .result = &.{} };
 
-    const analysis = self.getAnalysis(uri) orelse return stringify(allocator, empty);
+    const analysis = helpers.getAnalysis(&self.files, uri) orelse return stringify(allocator, empty);
     const decl = analysis.declAtPos(pos) orelse return stringify(allocator, empty);
 
     const decl_uri = if (std.mem.eql(u8, decl.range.file, uriToPath(uri)))
@@ -393,7 +228,7 @@ pub fn createReferencesResponse(self: *Self, allocator: Allocator, req: Request)
 
     const empty = response.References{ .id = req.id, .result = &.{} };
 
-    const analysis = self.getAnalysis(uri) orelse return stringify(allocator, empty);
+    const analysis = helpers.getAnalysis(&self.files, uri) orelse return stringify(allocator, empty);
     const target_decl = analysis.declAtPos(pos) orelse return stringify(allocator, empty);
 
     var locs = std.ArrayList(response.Location).empty;
@@ -420,7 +255,7 @@ pub fn createDocumentSymbolResponse(self: *Self, allocator: Allocator, req: Requ
     const uri = params.textDocument.uri;
 
     const empty = response.DocumentSymbol{ .id = req.id, .result = &.{} };
-    const analysis = self.getAnalysis(uri) orelse return stringify(allocator, empty);
+    const analysis = helpers.getAnalysis(&self.files, uri) orelse return stringify(allocator, empty);
 
     var symbols = std.ArrayList(response.SymbolInformation).empty;
     defer symbols.deinit(allocator);
@@ -459,7 +294,7 @@ pub fn createCompletionResponse(self: *Self, allocator: Allocator, req: Request)
     const pos = params.position;
 
     const empty = response.Completion{ .id = req.id, .result = .{ .items = &.{} } };
-    const analysis = self.getAnalysis(uri) orelse return stringify(allocator, empty);
+    const analysis = helpers.getAnalysis(&self.files, uri) orelse return stringify(allocator, empty);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -500,17 +335,35 @@ pub fn createCompletionResponse(self: *Self, allocator: Allocator, req: Request)
         const overloads = entry.value_ptr.*;
         if (overloads.len == 0) continue;
         const f = overloads[0];
-        const detail = try std.fmt.allocPrint(arena_alloc, "{s} {s}(...)", .{ f.return_type, f.name });
+        var detail_buf = std.Io.Writer.Allocating.init(arena_alloc);
+        try helpers.formatBuiltinSignature(&detail_buf, f);
+        const detail = try detail_buf.toOwnedSlice();
         const insert_text = if (supports_snippets)
             try std.fmt.allocPrint(arena_alloc, "{s}($1)", .{f.name})
         else
             try arena_alloc.dupe(u8, f.name);
+        const doc = try helpers.buildBuiltinDoc(arena_alloc, overloads);
         try items.append(arena_alloc, .{
             .label = f.name,
             .kind = .function,
             .detail = detail,
+            .documentation = .{ .kind = .markdown, .value = doc },
             .insertText = insert_text,
             .insertTextFormat = if (supports_snippets) .snippet else .text,
+        });
+    }
+
+    var type_it = self.builtin_types.iterator();
+    while (type_it.next()) |entry| {
+        const name = entry.key_ptr.*;
+        const desc = entry.value_ptr.*;
+        try items.append(arena_alloc, .{
+            .label = name,
+            .kind = .class,
+            .detail = name,
+            .documentation = if (desc.len > 0) .{ .kind = .markdown, .value = desc } else null,
+            .insertText = try arena_alloc.dupe(u8, name),
+            .insertTextFormat = .text,
         });
     }
 
@@ -519,7 +372,7 @@ pub fn createCompletionResponse(self: *Self, allocator: Allocator, req: Request)
 }
 
 pub fn createDiagnosticsNotification(self: *Self, allocator: Allocator, uri: []const u8) Error!?[]const u8 {
-    const analysis = self.getAnalysis(uri) orelse return null;
+    const analysis = helpers.getAnalysis(&self.files, uri) orelse return null;
 
     var diags = std.ArrayList(common.Diagnostic).empty;
     defer diags.deinit(allocator);
@@ -551,9 +404,10 @@ pub fn createRenameResponse(self: *Self, allocator: Allocator, req: Request) Err
     const uri = params.textDocument.uri;
     const new_name = params.newName;
 
-    const empty = response.Rename{ .id = req.id, .result = .{} };
-    const analysis = self.getAnalysis(uri) orelse return stringify(allocator, empty);
-    const target_decl = analysis.declAtPos(pos) orelse return stringify(allocator, empty);
+    const analysis = helpers.getAnalysis(&self.files, uri) orelse
+        return json.Stringify.valueAlloc(allocator, response.NullResult{ .id = req.id }, .{});
+    const target_decl = analysis.declAtPos(pos) orelse
+        return json.Stringify.valueAlloc(allocator, response.NullResult{ .id = req.id }, .{});
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -589,85 +443,6 @@ pub fn createRenameResponse(self: *Self, allocator: Allocator, req: Request) Err
     return stringify(allocator, resp);
 }
 
-const CallContext = struct {
-    func_name: []const u8,
-    active_param: u32,
-};
-
-fn scanForCall(source: []const u8, offset: usize) ?CallContext {
-    var active_param: u32 = 0;
-    var depth: u32 = 0;
-    var i: usize = offset;
-    while (i > 0) {
-        i -= 1;
-        switch (source[i]) {
-            ')' => depth += 1,
-            '(' => {
-                if (depth == 0) {
-                    var name_end = i;
-                    while (name_end > 0 and source[name_end - 1] == ' ') name_end -= 1;
-                    var name_start = name_end;
-                    while (name_start > 0 and (std.ascii.isAlphanumeric(source[name_start - 1]) or source[name_start - 1] == '_')) name_start -= 1;
-                    if (name_start == name_end) return null;
-                    return .{ .func_name = source[name_start..name_end], .active_param = active_param };
-                }
-                depth -= 1;
-            },
-            ',' => if (depth == 0) {
-                active_param += 1;
-            },
-            '\n' => return null,
-            else => {},
-        }
-    }
-    return null;
-}
-
-fn sigsFromDecl(arena: Allocator, decl: *const FileAnalysis.Declaration, active_param: u32) !?response.SignatureHelp.Result {
-    const func = decl.kind.function;
-    if (func.params.len > 0 and active_param >= func.params.len) return null;
-
-    var label_buf = std.Io.Writer.Allocating.init(arena);
-    try label_buf.writer.print("{s} {s}(", .{ func.return_type.name, decl.name });
-    var param_infos = std.ArrayList(response.SignatureHelp.ParameterInformation).empty;
-    for (func.params, 0..) |p, idx| {
-        if (idx > 0) try label_buf.writer.writeAll(", ");
-        const param_label = try std.fmt.allocPrint(arena, "{s} {s}", .{ p.glsl_type.name, p.name });
-        try label_buf.writer.writeAll(param_label);
-        try param_infos.append(arena, .{ .label = param_label });
-    }
-    try label_buf.writer.writeAll(")");
-
-    return .{
-        .signatures = try arena.dupe(response.SignatureHelp.SignatureInformation, &.{.{
-            .label = label_buf.written(),
-            .parameters = param_infos.items,
-        }}),
-        .activeSignature = 0,
-        .activeParameter = active_param,
-    };
-}
-
-fn sigsFromBuiltins(arena: Allocator, overloads: []const BuiltinFunction, active_param: u32) !?response.SignatureHelp.Result {
-    var sigs = std.ArrayList(response.SignatureHelp.SignatureInformation).empty;
-    for (overloads) |f| {
-        if (f.parameters.len != 0 and active_param >= f.parameters.len) continue;
-        var label_buf = std.Io.Writer.Allocating.init(arena);
-        try label_buf.writer.print("{s} {s}(", .{ f.return_type, f.name });
-        var param_infos = std.ArrayList(response.SignatureHelp.ParameterInformation).empty;
-        for (f.parameters, 0..) |p, idx| {
-            if (idx > 0) try label_buf.writer.writeAll(", ");
-            const param_label = try std.fmt.allocPrint(arena, "{s} {s}", .{ p.type, p.name });
-            try label_buf.writer.writeAll(param_label);
-            try param_infos.append(arena, .{ .label = param_label });
-        }
-        try label_buf.writer.writeAll(")");
-        try sigs.append(arena, .{ .label = label_buf.written(), .parameters = param_infos.items });
-    }
-    if (sigs.items.len == 0) return null;
-    return .{ .signatures = sigs.items, .activeSignature = 0, .activeParameter = active_param };
-}
-
 pub fn createSignatureHelpResponse(self: *Self, allocator: Allocator, req: Request) Error![]const u8 {
     std.debug.assert(req.params == .signature_help);
     const params = req.params.signature_help.value;
@@ -676,7 +451,7 @@ pub fn createSignatureHelpResponse(self: *Self, allocator: Allocator, req: Reque
 
     const empty = response.SignatureHelp{ .id = req.id, .result = .{ .signatures = &.{} } };
 
-    const analysis = self.getAnalysis(uri) orelse return stringify(allocator, empty);
+    const analysis = helpers.getAnalysis(&self.files, uri) orelse return stringify(allocator, empty);
 
     const scope = for (analysis.scopes) |*s| {
         if (FileAnalysis.lspPosInFaRange(pos, s.range)) break s;
@@ -694,7 +469,7 @@ pub fn createSignatureHelpResponse(self: *Self, allocator: Allocator, req: Reque
     }
     if (offset > analysis.source.len) return stringify(allocator, empty);
 
-    const ctx = scanForCall(analysis.source, offset) orelse return stringify(allocator, empty);
+    const ctx = helpers.scanForCall(analysis.source, offset) orelse return stringify(allocator, empty);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -702,9 +477,9 @@ pub fn createSignatureHelpResponse(self: *Self, allocator: Allocator, req: Reque
 
     const result: ?response.SignatureHelp.Result = for (scope.declarations) |*d| {
         if (d.kind == .function and std.mem.eql(u8, d.name, ctx.func_name))
-            break try sigsFromDecl(arena_alloc, d, ctx.active_param);
+            break try helpers.sigsFromDecl(arena_alloc, d, ctx.active_param);
     } else if (self.builtins.get(ctx.func_name)) |overloads|
-        try sigsFromBuiltins(arena_alloc, overloads, ctx.active_param)
+        try helpers.sigsFromBuiltins(arena_alloc, overloads, ctx.active_param)
     else
         null;
 
@@ -716,30 +491,103 @@ pub fn createSignatureHelpResponse(self: *Self, allocator: Allocator, req: Reque
     return stringify(allocator, resp);
 }
 
-fn analyzeBuffer(self: *Self, allocator: Allocator, uri: []const u8, content: []const u8) !void {
-    const path = uriToPath(uri);
+pub fn createSemanticTokensResponse(self: *Self, allocator: Allocator, req: Request) Error![]const u8 {
+    std.debug.assert(req.params == .semantic_tokens_full);
+    const uri = req.params.semantic_tokens_full.value.textDocument.uri;
 
-    const pid = std.os.linux.getpid();
-    const tmp_path = try std.fmt.allocPrintSentinel(allocator, "/tmp/sokol_lsp_buf_{}.glsl", .{pid}, 0);
-    defer {
-        _ = std.os.linux.unlink(tmp_path);
-        allocator.free(tmp_path);
+    const empty = response.SemanticTokensFull{ .id = req.id, .result = .{} };
+    const analysis = helpers.getAnalysis(&self.files, uri) orelse return stringify(allocator, empty);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var entries = std.ArrayList(helpers.SemanticEntry).empty;
+
+    for (analysis.top_level) |*decl| {
+        if (decl.name.len == 0) continue;
+        if (decl.kind == .function) {
+            for (decl.kind.function.params) |p| {
+                try helpers.appendSemanticEntry(&entries, arena_alloc, .function_param, p.name, p.range);
+            }
+        }
+        try helpers.appendSemanticEntry(&entries, arena_alloc, decl.kind, decl.name, decl.range);
+    }
+    for (analysis.scopes) |*scope| {
+        for (scope.declarations) |*decl| {
+            if (decl.name.len == 0) continue;
+            try helpers.appendSemanticEntry(&entries, arena_alloc, decl.kind, decl.name, decl.range);
+            if (decl.kind == .function) {
+                for (decl.kind.function.params) |p| {
+                    try helpers.appendSemanticEntry(&entries, arena_alloc, .function_param, p.name, p.range);
+                }
+            }
+        }
+        for (scope.references) |*ref| {
+            const decl = ref.decl orelse continue;
+            try helpers.appendSemanticEntry(&entries, arena_alloc, decl.kind, ref.name, ref.range);
+        }
     }
 
-    try std.Io.Dir.cwd().writeFile(self.io, .{
-        .sub_path = tmp_path,
-        .data = content,
-    });
+    std.mem.sort(helpers.SemanticEntry, entries.items, {}, struct {
+        fn lt(_: void, a: helpers.SemanticEntry, b: helpers.SemanticEntry) bool {
+            return a.line < b.line or (a.line == b.line and a.col < b.col);
+        }
+    }.lt);
 
+    var data = std.ArrayList(u32).empty;
+    var prev_line: u32 = 0;
+    var prev_col: u32 = 0;
+    for (entries.items) |e| {
+        const delta_line = e.line - prev_line;
+        const delta_col = if (delta_line == 0) e.col - prev_col else e.col;
+        try data.append(arena_alloc, delta_line);
+        try data.append(arena_alloc, delta_col);
+        try data.append(arena_alloc, e.len);
+        try data.append(arena_alloc, @intFromEnum(e.token_type));
+        try data.append(arena_alloc, e.modifiers);
+        prev_line = e.line;
+        prev_col = e.col;
+    }
+
+    return stringify(allocator, response.SemanticTokensFull{ .id = req.id, .result = .{ .data = data.items } });
+}
+
+pub fn handleDidOpen(self: *Self, allocator: Allocator, req: Request) Error!void {
+    std.debug.assert(req.params == .did_open);
+    const uri = req.params.did_open.value.textDocument.uri;
+    helpers.analyzeFile(allocator, self.io, &self.files, self.runner_config, uri) catch |err| {
+        std.log.err("Failed to analyze {s}: {}", .{ uri, err });
+    };
+}
+
+pub fn handleDidChange(self: *Self, allocator: Allocator, req: Request) Error!void {
+    std.debug.assert(req.params == .did_change);
+    const params = req.params.did_change.value;
+    const uri = params.textDocument.uri;
+    if (params.contentChanges.len == 0) return;
+    const content = params.contentChanges[params.contentChanges.len - 1].text;
+    helpers.analyzeBuffer(allocator, self.io, &self.files, self.runner_config, uri, content) catch |err| {
+        std.log.err("Failed to analyze buffer {s}: {}", .{ uri, err });
+    };
+}
+
+pub fn handleDidSave(self: *Self, allocator: Allocator, req: Request) Error!void {
+    std.debug.assert(req.params == .did_save);
+    const uri = req.params.did_save.value.textDocument.uri;
+    helpers.analyzeFile(allocator, self.io, &self.files, self.runner_config, uri) catch |err| {
+        std.log.err("Failed to analyze {s}: {}", .{ uri, err });
+    };
+}
+
+pub fn handleDidClose(self: *Self, allocator: Allocator, req: Request) void {
+    std.debug.assert(req.params == .did_close);
+    const uri = req.params.did_close.value.textDocument.uri;
+    const path = uriToPath(uri);
     if (self.files.fetchRemove(path)) |entry| {
         var old = entry.value;
         old.analysis.deinit();
         allocator.free(entry.key);
         allocator.free(old.uri);
     }
-
-    const analysis = try ShdcRunner.run(self.io, allocator, tmp_path, self.runner_config);
-    const key = try allocator.dupe(u8, path);
-    const uri_owned = try allocator.dupe(u8, uri);
-    try self.files.put(key, .{ .analysis = analysis, .uri = uri_owned });
 }

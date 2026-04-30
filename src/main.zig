@@ -23,6 +23,7 @@ pub fn main(init: std.process.Init) void {
 
     var w = log_file.writer(init.io, &log_buf);
     log_writer = &w.interface;
+    defer log_writer = null;
 
     var server = lsp.Server.init(allocator, init.io) catch |err|
         return log.err("Encountered error while initializing server: {}\n", .{err});
@@ -41,7 +42,7 @@ pub const std_options: std.Options = .{
 };
 
 var log_file = std.Io.File.stderr();
-var log_writer: *std.Io.Writer = undefined;
+var log_writer: ?*std.Io.Writer = null;
 
 pub fn logFn(
     comptime level: std.log.Level,
@@ -49,7 +50,8 @@ pub fn logFn(
     comptime format: []const u8,
     args: anytype,
 ) void {
-    defer log_writer.flush() catch {};
+    const w = log_writer orelse return;
+    defer w.flush() catch {};
 
     const prefix = switch (scope) {
         log.default_log_scope => "",
@@ -63,7 +65,7 @@ pub fn logFn(
         .debug => "38;5;245", // gray
     });
 
-    log_writer.print(f ++ "\n", args) catch {};
+    w.print(f ++ "\n", args) catch {};
 }
 
 test {

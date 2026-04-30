@@ -50,6 +50,17 @@ fn handleMessage(self: *@This(), message: []const u8) !void {
         .definition => try self.state.createDefinitionResponse(self.allocator, req),
         .references => try self.state.createReferencesResponse(self.allocator, req),
         .document_symbol => try self.state.createDocumentSymbolResponse(self.allocator, req),
+        .completion_resolve => |p| try std.json.Stringify.valueAlloc(self.allocator, response.CompletionResolve{
+            .id = req.id,
+            .result = .{
+                .label = p.value.label,
+                .kind = p.value.kind,
+                .detail = p.value.detail,
+                .documentation = p.value.documentation,
+                .insertText = p.value.insertText,
+                .insertTextFormat = p.value.insertTextFormat,
+            },
+        }, .{ .emit_null_optional_fields = false }),
         .did_open => {
             try self.state.handleDidOpen(self.allocator, req);
             if (try self.state.createDiagnosticsNotification(self.allocator, req.params.did_open.value.textDocument.uri)) |notif| {
@@ -60,9 +71,6 @@ fn handleMessage(self: *@This(), message: []const u8) !void {
         },
         .did_change => {
             try self.state.handleDidChange(self.allocator, req);
-            const refresh_bytes = try std.json.Stringify.valueAlloc(self.allocator, response.SemanticTokensRefresh{}, .{});
-            defer self.allocator.free(refresh_bytes);
-            try self.sendJSON(refresh_bytes);
             return;
         },
         .did_save => {

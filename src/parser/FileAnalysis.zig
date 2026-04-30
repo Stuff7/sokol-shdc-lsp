@@ -196,6 +196,7 @@ pub const DeclKind = union(enum) {
     storage_buffer: StorageBuffer,
     storage_image: StorageImage,
     function: Function,
+    function_param: void,
     local_var: GlslType,
     @"struct": Struct,
     header: Header,
