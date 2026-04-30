@@ -40,6 +40,7 @@ vim.lsp.start({
 
 ## Limitations
 
+- Linux only
 - Single-file only — cross-file references are not supported
 - Diagnostic column numbers are always 0 (limitation of sokol-shdc's output format)
 - `sampler2D` and other type constructors have no signature help (not in the GLSL spec)
