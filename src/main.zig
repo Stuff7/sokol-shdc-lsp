@@ -4,23 +4,16 @@ const lsp = @import("lsp.zig");
 const zut = @import("zut");
 const log = std.log;
 
+const APP_NAME = "sokol-shdc-lsp";
+
 pub fn main(init: std.process.Init) void {
     const allocator = init.gpa;
 
     var log_buf: [512]u8 = undefined;
-    const cwd = std.Io.Dir.cwd();
-
-    var args = init.minimal.args.iterate();
-    defer args.deinit();
-    _ = args.skip();
-    const log_path = args.next() orelse "lsp.log";
-
-    if (cwd.createFile(init.io, log_path, .{ .truncate = true })) |f| {
+    if (getLogFile(allocator, init.io, init.minimal.environ)) |f| {
         log_file = f;
     } else |e| std.debug.print("Failed to create log file: {}", .{e});
-
     defer log_file.close(init.io);
-
     var w = log_file.writer(init.io, &log_buf);
     log_writer = &w.interface;
     defer log_writer = null;
@@ -29,6 +22,22 @@ pub fn main(init: std.process.Init) void {
         return log.err("Encountered error while initializing server: {}\n", .{err});
 
     server.run(init.io) catch |err| log.err("Encountered error while running server: {}\n", .{err});
+}
+
+pub fn getLogFile(allocator: std.mem.Allocator, io: std.Io, env: std.process.Environ) !std.Io.File {
+    const logdir: std.Io.Dir = if (env.getAlloc(allocator, "XDG_STATE_HOME")) |path| dir: {
+        const dir = try std.Io.Dir.openDirAbsolute(io, path, .{});
+        defer dir.close(io);
+        break :dir try dir.createDirPathOpen(io, APP_NAME, .{});
+    } else |_| dir: {
+        const home_path = try env.getAlloc(allocator, "HOME");
+        defer allocator.free(home_path);
+        const dir = try std.Io.Dir.openDirAbsolute(io, home_path, .{});
+        defer dir.close(io);
+        break :dir try dir.createDirPathOpen(io, ".local/state/" ++ APP_NAME, .{});
+    };
+
+    return try logdir.createFile(io, "lsp.log", .{ .truncate = true });
 }
 
 pub const std_options: std.Options = .{
