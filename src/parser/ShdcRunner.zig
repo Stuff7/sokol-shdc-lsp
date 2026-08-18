@@ -73,9 +73,18 @@ fn findDecl(decls: []FileAnalysis.Declaration, name: []const u8) ?FileAnalysis.D
     return null;
 }
 
+fn normalizeYamlForParser(allocator: Allocator, source: []const u8) ![]const u8 {
+    const trimmed = std.mem.trimEnd(u8, source, " \t\r\n");
+    if (std.mem.endsWith(u8, trimmed, ":")) {
+        return std.fmt.allocPrint(allocator, "{s} []\n", .{trimmed});
+    }
+    return std.fmt.allocPrint(allocator, "{s}\n", .{trimmed});
+}
+
 fn enrichFromYaml(analysis: *FileAnalysis, yaml_source: []const u8) !void {
     const allocator = analysis.arena.allocator();
-    var doc = yaml.Yaml{ .source = yaml_source };
+    const normalized = try normalizeYamlForParser(allocator, yaml_source);
+    var doc = yaml.Yaml{ .source = normalized };
     defer doc.deinit(allocator);
     try doc.load(allocator);
 
